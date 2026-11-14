@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# ccvm-doctor - verify the VM still matches its hardening baseline.
+# Read-only. Exit 0 = all checks passed, 1 = at least one FAIL.
+# Run as root (sudo ccvm-doctor) for the full set of checks.
+set -uo pipefail
+
+CONF=/etc/ccvm/ccvm.conf
+# shellcheck source=/dev/null
+[[ -r $CONF ]] && source "$CONF"
+: "${CCVM_ADMIN_USER:=}"; : "${CCVM_SSH_PORT:=22}"; : "${CCVM_DOCKER:=rootless}"
+: "${CCVM_INSTALL_CLAUDE:=yes}"; : "${CCVM_UPDATE_POLICY:=security}"
+: "${CCVM_EGRESS_BLOCK_LAN:=yes}"
+
+fails=0; warns=0
+pass() { printf '  \033[32mPASS\033[0m  %s\n' "$*"; }
+fail() { printf '  \033[31mFAIL\033[0m  %s\n' "$*"; fails=$((fails+1)); }
+warn() { printf '  \033[33mWARN\033[0m  %s\n' "$*"; warns=$((warns+1)); }
+skip() { printf '  SKIP  %s\n' "$*"; }
+need_root() { [[ $EUID -eq 0 ]] || { skip "$1 (needs root)"; return 1; }; }
+
+echo "== SSH"
+if need_root "sshd effective config"; then
+  cfg=$(sshd -T 2>/dev/null)
+  chk() { grep -qiE "^$1 $2\$" <<<"$cfg" && pass "sshd $1 $2" || fail "sshd $1 should be $2 (got: $(grep -iE "^$1 " <<<"$cfg" | head -1))"; }
+  chk passwordauthentication no
+  chk kbdinteractiveauthentication no
+  chk permitrootlogin no
+  chk pubkeyauthentication yes
+  chk x11forwarding no
+  chk permitemptypasswords no
+  chk maxauthtries 3
+  [[ -n $CCVM_ADMIN_USER ]] && { grep -qiE "^allowusers $CCVM_ADMIN_USER\$" <<<"$cfg" && pass "AllowUsers restricted to $CCVM_ADMIN_USER" || fail "AllowUsers is not restricted to $CCVM_ADMIN_USER"; }
+  grep -qiE '^authenticationmethods publickey$' <<<"$cfg" && pass "AuthenticationMethods publickey" || fail "AuthenticationMethods not publickey-only"
+fi
+[[ -n $CCVM_ADMIN_USER && -s /home/$CCVM_ADMIN_USER/.ssh/authorized_keys ]] && pass "authorized_keys present" || fail "no authorized_keys for admin user"
+
+echo "== Accounts"
+if need_root "root password status"; then
+  st=$(passwd -S root 2>/dev/null | awk '{print $2}')
+  [[ $st == L || $st == LK ]] && pass "root password locked" || fail "root password is not locked (status=$st)"
+fi
+if getent group docker >/dev/null && [[ -n $(getent group docker | cut -d: -f4) ]]; then
+  fail "users in the docker group: $(getent group docker | cut -d: -f4) (equivalent to root)"
+else pass "docker group is empty"; fi
+
+echo "== Firewall"
+if need_root "ufw status"; then
+  out=$(ufw status verbose 2>/dev/null)
+  grep -q '^Status: active' <<<"$out" && pass "ufw active" || fail "ufw is not active"
+  grep -qE 'Default: deny \(incoming\)' <<<"$out" && pass "default deny incoming" || fail "ufw incoming default is not deny"
+  grep -qE "(^|[^0-9])$CCVM_SSH_PORT/tcp +ALLOW IN +(Anywhere|0\.0\.0\.0/0)( |$)" <<<"$out" && fail "SSH is open to Anywhere" || pass "SSH is not open to Anywhere"
+  if [[ $CCVM_EGRESS_BLOCK_LAN == yes ]]; then
+    grep -qE '192\.168\.0\.0/16 +DENY OUT' <<<"$out" && pass "egress to private ranges is blocked" || fail "LAN egress block rules missing"
+  fi
+fi
+
+echo "== Services"
+for u in ssh ufw fail2ban auditd chrony qemu-guest-agent; do
+  systemctl is-active --quiet "$u" && pass "$u active" || fail "$u not active"
+done
+if [[ $CCVM_UPDATE_POLICY != none ]]; then
+  systemctl is-enabled --quiet unattended-upgrades && pass "unattended-upgrades enabled" || fail "unattended-upgrades not enabled"
+fi
+ls /etc/apt/apt.conf.d/51ccvm-unattended >/dev/null 2>&1 && grep -q 'security' /etc/apt/apt.conf.d/51ccvm-unattended && ! grep -q -- '-updates' /etc/apt/apt.conf.d/51ccvm-unattended \
+  && pass "unattended-upgrades limited to security pockets" || { [[ $CCVM_UPDATE_POLICY == none ]] && skip "unattended-upgrades disabled by policy" || fail "unattended-upgrades origin list not security-only"; }
+
+echo "== Kernel"
+# "min" keys accept the expected value or anything stricter (e.g. bpf 2 = locked on).
+for kv in kernel.kptr_restrict=2 kernel.dmesg_restrict=1 kernel.unprivileged_bpf_disabled=1 \
+          net.ipv4.conf.all.accept_redirects=0 net.ipv4.tcp_syncookies=1 fs.protected_symlinks=1 fs.suid_dumpable=0; do
+  k=${kv%%=*}; v=${kv#*=}; got=$(sysctl -n "$k" 2>/dev/null)
+  case $k in
+    kernel.kptr_restrict|kernel.dmesg_restrict|kernel.unprivileged_bpf_disabled|fs.protected_symlinks)
+      if [[ $got =~ ^[0-9]+$ ]] && (( got >= v )); then pass "$k=$got (>= $v)"; else fail "$k expected >= $v, got '$got'"; fi ;;
+    *) if [[ $got == "$v" ]]; then pass "$k=$v"; else fail "$k expected $v, got '$got'"; fi ;;
+  esac
+done
+if [[ $(systemctl is-active apparmor 2>/dev/null) == active ]]; then pass "apparmor active"; else fail "apparmor not active"; fi
+
+echo "== Docker"
+if [[ $CCVM_DOCKER == rootless ]]; then
+  if systemctl is-active --quiet docker.service; then fail "ROOT docker daemon is running"; else pass "root docker daemon is not running"; fi
+  [[ $(systemctl is-enabled docker.service 2>/dev/null) == masked ]] && pass "root docker.service masked" || fail "root docker.service is not masked"
+  if [[ -n $CCVM_ADMIN_USER ]] && need_root "rootless docker status"; then
+    uid=$(id -u "$CCVM_ADMIN_USER")
+    if [[ -S /run/user/$uid/docker.sock ]]; then pass "rootless docker socket present"; else warn "rootless docker socket missing (is the user service running?)"; fi
+    cd / && runuser -u "$CCVM_ADMIN_USER" -- env XDG_RUNTIME_DIR="/run/user/$uid" DOCKER_HOST="unix:///run/user/$uid/docker.sock" docker info --format '{{.SecurityOptions}}' 2>/dev/null | grep -q rootless \
+      && pass "docker reports rootless mode" || warn "docker did not report rootless mode"
+  fi
+else skip "docker disabled"; fi
+
+echo "== Claude Code"
+if [[ $CCVM_INSTALL_CLAUDE == yes ]]; then
+  if command -v claude >/dev/null; then pass "claude installed ($(claude --version 2>/dev/null | head -1))"; else fail "claude not installed"; fi
+  f=/etc/claude-code/managed-settings.json
+  if [[ -r $f ]]; then
+    jq -e . "$f" >/dev/null 2>&1 && pass "managed-settings.json is valid JSON" || fail "managed-settings.json is invalid"
+    jq -e '.sandbox.enabled == true and .sandbox.failIfUnavailable == true and .sandbox.allowUnsandboxedCommands == false' "$f" >/dev/null 2>&1 \
+      && pass "sandbox required, no unsandboxed retry" || fail "sandbox is not enforced in managed settings"
+    jq -e '.permissions.disableBypassPermissionsMode == "disable"' "$f" >/dev/null 2>&1 \
+      && pass "bypassPermissions mode disabled" || fail "bypassPermissions mode is not disabled"
+  else fail "$f missing"; fi
+  command -v bwrap >/dev/null && pass "bubblewrap installed" || fail "bubblewrap missing"
+  command -v socat >/dev/null && pass "socat installed" || fail "socat missing"
+  [[ -f /etc/apparmor.d/bwrap-userns-restrict ]] && pass "AppArmor profile for bwrap present" || warn "no AppArmor bwrap profile (sandbox may fail on restricted userns)"
+fi
+
+echo "== Pending"
+[[ -f /var/run/reboot-required ]] && warn "reboot required ($(tr '\n' ' ' </var/run/reboot-required.pkgs 2>/dev/null))" || pass "no reboot pending"
+n=$(apt-get -s upgrade 2>/dev/null | grep -c '^Inst ' || true)
+[[ ${n:-0} -eq 0 ]] && pass "no upgrades pending" || warn "$n package upgrade(s) pending (run: sudo ccvm-update)"
+
+echo
+if (( fails )); then printf '\033[31m%d check(s) FAILED\033[0m, %d warning(s)\n' "$fails" "$warns"; exit 1; fi
+printf '\033[32mAll checks passed\033[0m, %d warning(s)\n' "$warns"

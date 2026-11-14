@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# ccvm-update - manual, on-demand update of the whole VM. Nothing here runs from
+# cron and nothing is fetched from outside signed apt repositories.
+#
+#   sudo ccvm-update            update OS packages and Claude Code, then run the doctor
+#   sudo ccvm-update --check    list what would change, change nothing
+set -uo pipefail
+export DEBIAN_FRONTEND=noninteractive
+[[ $EUID -eq 0 ]] || { echo "run as root: sudo ccvm-update" >&2; exit 1; }
+
+if [[ ${1:-} == --check ]]; then
+  apt-get update -qq && apt list --upgradable 2>/dev/null | tail -n +2
+  exit 0
+fi
+
+echo ">>> apt update + upgrade (OS and Claude Code both come from signed repos)"
+apt-get update -qq || echo "[WARN] apt update failed"
+apt-get upgrade -y -qq || echo "[WARN] apt upgrade reported errors"
+apt-get autoremove -y -qq || true
+
+echo ">>> claude-code: $(claude --version 2>/dev/null | head -1 || echo not installed)"
+if [[ -f /var/run/reboot-required ]]; then
+  echo ">>> A REBOOT IS REQUIRED to finish applying updates: sudo reboot"
+fi
+echo ">>> health check"
+ccvm-doctor

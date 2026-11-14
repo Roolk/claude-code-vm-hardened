@@ -1,0 +1,34 @@
+## Managed by ccvm-harden. Watches for tampering with identity, SSH, sudo,
+## firewall, and the Claude Code managed policy.
+-D
+-b 8192
+-f 1
+
+-w /etc/passwd -p wa -k identity
+-w /etc/shadow -p wa -k identity
+-w /etc/group -p wa -k identity
+-w /etc/gshadow -p wa -k identity
+-w /etc/subuid -p wa -k identity
+-w /etc/subgid -p wa -k identity
+
+-w /etc/ssh/sshd_config -p wa -k sshd
+-w /etc/ssh/sshd_config.d -p wa -k sshd
+-w /home/@ADMIN_USER@/.ssh -p wa -k user_ssh
+
+-w /etc/sudoers -p wa -k sudoers
+-w /etc/sudoers.d -p wa -k sudoers
+
+-w /etc/ufw -p wa -k firewall
+-w /etc/default/ufw -p wa -k firewall
+
+-w /etc/claude-code -p wa -k claude_policy
+-w /etc/ccvm -p wa -k ccvm_config
+-w /etc/apparmor.d -p wa -k apparmor
+
+-w /usr/bin/sudo -p x -k priv_cmd
+-w /usr/bin/su -p x -k priv_cmd
+-w /usr/bin/newuidmap -p x -k userns
+-w /usr/bin/newgidmap -p x -k userns
+
+-a always,exit -F arch=b64 -S init_module,finit_module,delete_module -k kernel_modules
+-a always,exit -F arch=b64 -S mount -F auid>=1000 -F auid!=unset -k mounts

@@ -1,0 +1,24 @@
+name: lint
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          sudo -S -p '' apt-get update -qq && sudo -S -p '' apt-get install -y -qq shellcheck
+          shellcheck -x -S warning provision.sh guest/ccvm-harden.sh guest/ccvm-doctor guest/ccvm-update tests/lint.sh
+      - name: dry-run + cloud-init schema
+        run: |
+          pip install --quiet cloud-init
+          ssh-keygen -q -t ed25519 -N '' -f /tmp/k
+          CCVM_NONINTERACTIVE=1 CCVM_VMID=999 CCVM_ADMIN_USER=tester CCVM_SSH_KEY_SOURCE=paste \
+          CCVM_SSH_PUBKEY="$(cat /tmp/k.pub)" CCVM_SSH_SOURCES=10.0.0.0/24 CCVM_BRIDGE=vmbr0 \
+          CCVM_SUDO_MODE=password CCVM_ADMIN_PASSWORD_HASH='$6$salt$abcdefghijklmnopqrstuv' \
+            ./provision.sh --dry-run >/dev/null
+          cloud-init schema --config-file out/user-data.yaml
