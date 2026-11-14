@@ -147,7 +147,19 @@ pick_storage() { # pick_storage VAR content "Question"
   local -a opts=()
   rows=$(list_storages "$content")
   if (( DRY_RUN )) && [[ -z $rows ]]; then printf -v "$var" '%s' "${!var:-local}"; return 0; fi
-  [[ -n $rows ]] || die "no active storage with content type '$content' - enable it in Datacenter > Storage"
+  if [[ -z $rows ]]; then
+    if [[ $content == snippets ]]; then
+      die "no storage has the 'Snippets' content type enabled.
+        Cloud-init files are plain files, so this must be a DIRECTORY-type storage (ZFS pools, LVM-thin and
+        Ceph cannot hold snippets). The built-in 'local' storage is the usual choice:
+          Datacenter > Storage > local > Edit > Content > tick 'Snippets'
+        or from a shell: first run  pvesm status --storage local  and  grep -A6 '^dir: local' /etc/pve/storage.cfg
+        to see the current content list, then add ',snippets' to it:
+          pvesm set local --content <existing,types>,snippets
+        then run this script again."
+    fi
+    die "no active storage with content type '$content' - enable it in Datacenter > Storage"
+  fi
   while IFS=$'\t' read -r name type free; do opts+=("$name|$name ($type, ${free} GiB free)"); done <<<"$rows"
   choose "$var" "$q" 1 "${opts[@]}"
 }

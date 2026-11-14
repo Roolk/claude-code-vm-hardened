@@ -34,7 +34,7 @@ Try it without changing anything: `./provision.sh --dry-run` asks the questions 
 file to `./out/user-data.yaml`.
 
 You need: Proxmox VE 8 or 9, root, internet access from the node, a storage that allows **Disk image** content,
-and one that allows **Snippets** (Datacenter -> Storage -> edit `local` -> add content type *Snippets*).
+and one that allows **Snippets**. Snippets only work on a *directory*-type storage (not ZFS/LVM-thin/Ceph), so enable it on `local`: Datacenter -> Storage -> `local` -> Edit -> Content -> tick *Snippets*. The VM disk itself can still live on ZFS.
 
 It is intentionally **not** a `curl | bash` installer: the guest scripts are bundled from your reviewed local copy.
 
