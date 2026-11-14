@@ -242,11 +242,12 @@ firewall() {
 system_hardening() {
   LOG "Applying sysctl, module blacklist, journald and fail2ban settings"
   install -d -m 0755 /etc/sysctl.d /etc/modprobe.d /etc/fail2ban/jail.d /etc/audit/rules.d
-  install -m 0644 "$FILES_DIR/sysctl.conf" /etc/sysctl.d/60-ccvm.conf
+  rm -f /etc/sysctl.d/60-ccvm.conf /etc/sysctl.d/61-ccvm-ipv6.conf
+  install -m 0644 "$FILES_DIR/sysctl.conf" /etc/sysctl.d/99-zz-ccvm.conf
   if [[ $CCVM_DISABLE_IPV6 == yes ]]; then
-    printf 'net.ipv6.conf.all.disable_ipv6 = 1\nnet.ipv6.conf.default.disable_ipv6 = 1\n' > /etc/sysctl.d/61-ccvm-ipv6.conf
+    printf 'net.ipv6.conf.all.disable_ipv6 = 1\nnet.ipv6.conf.default.disable_ipv6 = 1\n' > /etc/sysctl.d/99-zz-ccvm-ipv6.conf
   else
-    rm -f /etc/sysctl.d/61-ccvm-ipv6.conf
+    rm -f /etc/sysctl.d/99-zz-ccvm-ipv6.conf
   fi
   sysctl --system >/dev/null || WARN "some sysctl keys were rejected (kernel may lack them)"
 
