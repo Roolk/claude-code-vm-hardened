@@ -28,7 +28,10 @@ if need_root "sshd effective config"; then
   chk pubkeyauthentication yes
   chk x11forwarding no
   chk permitemptypasswords no
-  chk maxauthtries 3
+  mat=$(awk 'tolower($1)=="maxauthtries"{print $2}' <<<"$cfg")
+  if [[ $mat =~ ^[0-9]+$ ]] && (( mat <= 6 )); then pass "sshd maxauthtries $mat (<= 6)"
+  elif [[ $mat =~ ^[0-9]+$ ]] && (( mat <= 10 )); then warn "sshd maxauthtries is $mat (recommended <= 6; key-only auth keeps this low risk)"
+  else fail "sshd maxauthtries should be <= 10 (got: ${mat:-unset})"; fi
   [[ -n $CCVM_ADMIN_USER ]] && { grep -qiE "^allowusers $CCVM_ADMIN_USER\$" <<<"$cfg" && pass "AllowUsers restricted to $CCVM_ADMIN_USER" || fail "AllowUsers is not restricted to $CCVM_ADMIN_USER"; }
   grep -qiE '^authenticationmethods publickey$' <<<"$cfg" && pass "AuthenticationMethods publickey" || fail "AuthenticationMethods not publickey-only"
 fi

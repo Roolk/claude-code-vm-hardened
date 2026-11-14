@@ -12,7 +12,7 @@ Scope: the VM created by `provision.sh`, an admin using it over SSH, and Claude 
 
 | Threat | Mitigation | Residual risk |
 |---|---|---|
-| Internet/LAN attacker brute-forcing SSH | Key-only auth, `AllowUsers`, ufw source allow-list, fail2ban, 3 tries | A vulnerability in sshd itself (mitigated by security auto-updates) |
+| Internet/LAN attacker brute-forcing SSH | Key-only auth, `AllowUsers`, ufw source allow-list, fail2ban, 6 auth tries | A vulnerability in sshd itself (mitigated by security auto-updates) |
 | Attacker on an allowed source network | Same as above; no password path exists | Stolen/unprotected private key = access. Use a passphrase or hardware key |
 | MITM on first connection | Provisioner prints the host key fingerprint from inside the guest; only ed25519 host key exists | You must compare it |
 | Tampered VM image | `SHA256SUMS` GPG-verified against a pinned fingerprint, then checksum-verified | Compromise of Canonical's signing key |

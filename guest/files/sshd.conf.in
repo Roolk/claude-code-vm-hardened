@@ -10,7 +10,7 @@ KbdInteractiveAuthentication no
 PermitEmptyPasswords no
 AuthenticationMethods publickey
 AllowUsers @ADMIN_USER@
-MaxAuthTries 3
+MaxAuthTries 6
 MaxSessions 4
 LoginGraceTime 30
 

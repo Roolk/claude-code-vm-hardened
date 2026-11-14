@@ -76,7 +76,7 @@ Make a DHCP reservation for the VM on your router if you used DHCP.
 | Area | Measures |
 |---|---|
 | Image | GPG-verified `SHA256SUMS` (pinned key fingerprint) + checksum before import |
-| SSH | `publickey` only, `AllowUsers <admin>`, no root, no forwarding/X11/agent by default, ed25519 host key only, `mlkem768x25519` / curve25519 KEX, ChaCha20/AES-GCM, ETM MACs, 3 tries, 30 s grace, verbose logging, weak DH moduli removed, other drop-ins that re-enable passwords are neutralised |
+| SSH | `publickey` only, `AllowUsers <admin>`, no root, no forwarding/X11/agent by default, ed25519 host key only, `mlkem768x25519` / curve25519 KEX, ChaCha20/AES-GCM, ETM MACs, 6 auth tries, 30 s grace, verbose logging, weak DH moduli removed, other drop-ins that re-enable passwords are neutralised |
 | Accounts | root password locked, cloud-init's NOPASSWD sudoers removed, `sudo` requires a password by default, password quality rules |
 | Firewall | `ufw` default-deny inbound, SSH only from your sources, optional egress block of RFC1918/CGNAT/link-local, IPv6 off |
 | Kernel | sysctl hardening (kptr, dmesg, bpf, ptrace, redirects, rp_filter, syncookies, protected_*), rare protocols/filesystems blacklisted, core dumps off |
