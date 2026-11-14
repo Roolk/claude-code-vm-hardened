@@ -104,8 +104,8 @@ Please read these before trusting it:
   AppArmor profile (`/etc/apparmor.d/bwrap-userns-restrict`) that blocks the nested user namespace Claude Code's
   `apply-seccomp` helper needs, so each sandboxed command dies with `apply-seccomp: ... Permission denied`. This is an
   upstream interaction (see [anthropics/claude-code#101946](https://github.com/anthropics/claude-code/issues/101946)),
-  and `sudo ccvm-doctor` now reports it as a FAIL. Because `failIfUnavailable` and "no unsandboxed retry" are enforced,
-  Claude cannot run commands until it is resolved. See [docs/CLAUDE-SANDBOX-UBUNTU-2604.md](docs/CLAUDE-SANDBOX-UBUNTU-2604.md).
+  so `provision.sh` applies the documented workaround by default (it asks first), and `sudo ccvm-doctor` fails if the sandbox
+  cannot start. Because `failIfUnavailable` and "no unsandboxed retry" are enforced, Claude cannot run commands until it works. See [docs/CLAUDE-SANDBOX-UBUNTU-2604.md](docs/CLAUDE-SANDBOX-UBUNTU-2604.md).
 - **Docker + sandbox:** letting Claude's sandbox reach the rootless Docker socket (an opt-in prompt) means a container
   can read anything the admin user can. Leave it off unless you need it.
 - **Rootless Docker limits:** no privileged containers, cannot bind ports below 1024, slower user-space networking.

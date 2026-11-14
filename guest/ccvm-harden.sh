@@ -53,7 +53,7 @@ source "$CONF"
 : "${CCVM_CLAUDE_AUTO_UPDATE:=no}"
 : "${CCVM_CLAUDE_MODE:=default}"             # default | acceptEdits | auto
 : "${CCVM_CLAUDE_POLICY:=strict}"            # strict | standard
-: "${CCVM_CLAUDE_DOCKER:=no}"; : "${CCVM_CLAUDE_REMOTE:=no}"
+: "${CCVM_CLAUDE_DOCKER:=no}"; : "${CCVM_CLAUDE_REMOTE:=no}"; : "${CCVM_BWRAP_APPARMOR_FIX:=yes}"
 : "${CCVM_CLAUDE_DOMAINS:=github.com api.github.com codeload.github.com objects.githubusercontent.com raw.githubusercontent.com registry.npmjs.org pypi.org files.pythonhosted.org proxy.golang.org sum.golang.org}"
 : "${CCVM_SUDO_MODE:=password}"              # password | nopasswd
 : "${CCVM_STATE_DIR:=/var/lib/ccvm}"
@@ -415,6 +415,31 @@ claude_policy() {
   install -d -m 0750 -o "$CCVM_ADMIN_USER" -g "$CCVM_ADMIN_USER" "$ADMIN_HOME/projects"
 }
 
+# ── 7b. bubblewrap vs Ubuntu 26.04's AppArmor ──────────────────────────────
+# Ubuntu ships /etc/apparmor.d/bwrap-userns-restrict, which denies CAP_SYS_ADMIN to bwrap's children. Claude Code's
+# sandbox helper (apply-seccomp) needs a nested user namespace, so with that profile every sandboxed command fails
+# ("apply-seccomp: ... Permission denied"; anthropics/claude-code#101946). Anthropic's documented profile uses the same
+# profile name, so Ubuntu's must be disabled (symlink in apparmor.d/disable keeps it off across reboots).
+# Scope: only programs executing /usr/bin/bwrap. Filesystem/network/seccomp rules of Claude's sandbox are unchanged.
+bwrap_apparmor() {
+  [[ $CCVM_INSTALL_CLAUDE == yes && $CCVM_BWRAP_APPARMOR_FIX == yes ]] || { LOG "Skipping bwrap AppArmor workaround"; return 0; }
+  [[ -f /etc/apparmor.d/bwrap-userns-restrict ]] || { LOG "No Ubuntu bwrap-userns-restrict profile present; nothing to do"; return 0; }
+  LOG "Applying bwrap AppArmor workaround so Claude Code's sandbox can start (Ubuntu 26.04)"
+  cat > /etc/apparmor.d/bwrap <<'EOT'
+abi <abi/4.0>,
+include <tunables/global>
+
+profile bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+  include if exists <local/bwrap>
+}
+EOT
+  install -d -m 0755 /etc/apparmor.d/disable
+  ln -sf /etc/apparmor.d/bwrap-userns-restrict /etc/apparmor.d/disable/bwrap-userns-restrict
+  apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict 2>/dev/null || true
+  apparmor_parser -r /etc/apparmor.d/bwrap || WARN "could not load the bwrap AppArmor profile"
+}
+
 # ── 8. Rootless Docker ──────────────────────────────────────────────────────
 docker_rootless() {
   [[ $CCVM_DOCKER == rootless ]] || { LOG "Skipping Docker"; return 0; }
@@ -484,6 +509,7 @@ main() {
   system_hardening
   updates
   claude_code
+  bwrap_apparmor
   docker_rootless
   tooling
   date -u +%FT%TZ > "$CCVM_STATE_DIR/harden.done"
