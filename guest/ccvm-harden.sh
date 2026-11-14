@@ -262,8 +262,6 @@ system_hardening() {
   if [[ $CCVM_SSH_PORT != 22 ]]; then
     printf '\n[sshd]\nport = %s\n' "$CCVM_SSH_PORT" >> /etc/fail2ban/jail.d/10-ccvm.local
   fi
-  # Never ban the networks you allowed to SSH in: a stray key offer from your own PC must not lock you out.
-  sed -i "s#^ignoreip = .*#ignoreip = 127.0.0.1/8 ::1 ${CCVM_SSH_SOURCES//,/ }#" /etc/fail2ban/jail.d/10-ccvm.local
   systemctl enable fail2ban.service >/dev/null 2>&1 || true
   systemctl restart fail2ban.service || WARN "fail2ban did not start"
 
