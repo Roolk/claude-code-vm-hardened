@@ -1,0 +1,57 @@
+# Claude sandbox does not start on Ubuntu 26.04
+
+**Symptom:** every shell command Claude tries fails before it runs:
+
+```
+apply-seccomp: write /proc/self/setgroups (nested userns is capability-restricted; caller must provide CAP_SYS_ADMIN): Permission denied
+```
+
+`sudo ccvm-doctor` shows `FAIL Claude sandbox CANNOT start`.
+
+**Cause:** Ubuntu 26.04 ships `/etc/apparmor.d/bwrap-userns-restrict`. It runs bwrap's children under an
+`unpriv_bwrap` profile that denies `CAP_SYS_ADMIN`. Claude Code's bundled `apply-seccomp` helper creates a nested user
+namespace, which needs that capability. Anthropic's documented fix (an `/etc/apparmor.d/bwrap` profile) declares the same
+profile name as Ubuntu's, so only one can be loaded, and Ubuntu's wins again at every boot.
+Upstream: https://github.com/anthropics/claude-code/issues/101946 (open when this was written).
+
+## Workaround A (narrow): replace Ubuntu's bwrap profile with Anthropic's
+
+Affects only programs that run `/usr/bin/bwrap` (Claude Code; Flatpak if installed). It switches off Ubuntu 26.04's
+extra user-namespace restriction *for bwrap*; the sandbox's filesystem, network and seccomp rules stay in force.
+Reported to work in the upstream thread; not yet verified by this project on a live VM.
+
+```bash
+sudo -S -p '' tee /etc/apparmor.d/bwrap >/dev/null <<'EOT'
+abi <abi/4.0>,
+include <tunables/global>
+
+profile bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+  include if exists <local/bwrap>
+}
+EOT
+sudo -S -p '' mkdir -p /etc/apparmor.d/disable
+sudo -S -p '' ln -sf /etc/apparmor.d/bwrap-userns-restrict /etc/apparmor.d/disable/
+sudo -S -p '' apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict || true
+sudo -S -p '' apparmor_parser -r /etc/apparmor.d/bwrap
+```
+
+The `disable/` symlink is what makes it survive a reboot. Verify (should print `unconfined`):
+
+```bash
+bwrap --ro-bind / / --dev /dev --proc /proc --unshare-user cat /proc/self/attr/current
+sudo -S -p '' ccvm-doctor | grep -i sandbox
+```
+
+Restart `claude` afterwards.
+
+## Workaround B (weaker): allow all Unix sockets
+
+Settings-only. Reported upstream to make commands run by skipping the failing helper step. It removes Claude's Unix
+domain socket blocking, so sandboxed commands could reach local sockets (an ssh-agent, a Docker socket, D-Bus).
+Prefer A.
+
+## Not recommended
+- `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` (all programs, lost at reboot, and reported not to be
+  enough here because the bwrap profile still stacks `unpriv_bwrap`).
+- Turning off the sandbox (`failIfUnavailable: false` plus allowing unsandboxed commands): defeats the point of this VM.

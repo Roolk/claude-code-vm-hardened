@@ -110,7 +110,18 @@ if [[ $CCVM_INSTALL_CLAUDE == yes ]]; then
   else fail "$f missing"; fi
   command -v bwrap >/dev/null && pass "bubblewrap installed" || fail "bubblewrap missing"
   command -v socat >/dev/null && pass "socat installed" || fail "socat missing"
-  [[ -f /etc/apparmor.d/bwrap-userns-restrict ]] && pass "AppArmor profile for bwrap present" || warn "no AppArmor bwrap profile (sandbox may fail on restricted userns)"
+  # Functional test: the file merely existing proves nothing. Claude's sandbox needs a *nested* user namespace
+  # inside bwrap; Ubuntu's stock bwrap-userns-restrict profile (AppArmor) blocks exactly that.
+  if command -v bwrap >/dev/null && command -v unshare >/dev/null; then
+    bw=(bwrap --ro-bind / / --dev /dev --proc /proc --unshare-user --unshare-pid --)
+    if [[ $EUID -eq 0 && -n $CCVM_ADMIN_USER ]]; then run=(runuser -u "$CCVM_ADMIN_USER" --); else run=(); fi
+    if (cd / && "${run[@]}" timeout 20 "${bw[@]}" unshare --user --map-root-user true) >/dev/null 2>&1; then
+      pass "Claude sandbox can start (bwrap + nested user namespace works)"
+    else
+      ctx=$(cd / && "${run[@]}" timeout 20 "${bw[@]}" cat /proc/self/attr/current 2>/dev/null | tr -d '\0')
+      fail "Claude sandbox CANNOT start: bwrap nested user namespace is blocked (AppArmor context: ${ctx:-unknown}). See README, 'Known issue: Claude sandbox on Ubuntu 26.04'"
+    fi
+  else warn "cannot test the Claude sandbox (bwrap or unshare missing)"; fi
 fi
 
 echo "== Pending"
