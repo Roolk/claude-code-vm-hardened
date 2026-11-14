@@ -56,7 +56,7 @@ It is intentionally **not** a `curl | bash` installer: the guest scripts are bun
 | Block LAN egress | On by default: the VM can reach the internet, gateway and DNS, not your private ranges |
 | IPv6 | Disabled by default |
 | Docker | Rootless (default) or none |
-| Claude Code | Install yes/no, `stable` or `latest` channel, update policy, **strict/standard** policy, permission mode, sandbox domain allow-list, Docker-socket access |
+| Claude Code | Install yes/no, `stable` or `latest` channel, update policy, **strict/standard** policy, permission mode, Remote Control on/off (off by default), sandbox domain allow-list, Docker-socket access |
 
 Every prompt can be pre-answered with an environment variable (`CCVM_VMID`, `CCVM_ADMIN_USER`, ...) and
 `CCVM_NONINTERACTIVE=1`; see the top of `provision.sh` and `tests/lint.sh` for an example.

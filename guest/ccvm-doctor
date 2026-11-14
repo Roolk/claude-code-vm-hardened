@@ -12,6 +12,9 @@ CONF=/etc/ccvm/ccvm.conf
 : "${CCVM_EGRESS_BLOCK_LAN:=yes}"
 
 fails=0; warns=0
+if [[ $EUID -ne 0 ]]; then
+  printf '  NOTE  not running as root: some checks will be skipped. Run "sudo ccvm-doctor" for the full set.\n'
+fi
 pass() { printf '  \033[32mPASS\033[0m  %s\n' "$*"; }
 fail() { printf '  \033[31mFAIL\033[0m  %s\n' "$*"; fails=$((fails+1)); }
 warn() { printf '  \033[33mWARN\033[0m  %s\n' "$*"; warns=$((warns+1)); }
@@ -35,7 +38,9 @@ if need_root "sshd effective config"; then
   [[ -n $CCVM_ADMIN_USER ]] && { grep -qiE "^allowusers $CCVM_ADMIN_USER\$" <<<"$cfg" && pass "AllowUsers restricted to $CCVM_ADMIN_USER" || fail "AllowUsers is not restricted to $CCVM_ADMIN_USER"; }
   grep -qiE '^authenticationmethods publickey$' <<<"$cfg" && pass "AuthenticationMethods publickey" || fail "AuthenticationMethods not publickey-only"
 fi
-[[ -n $CCVM_ADMIN_USER && -s /home/$CCVM_ADMIN_USER/.ssh/authorized_keys ]] && pass "authorized_keys present" || fail "no authorized_keys for admin user"
+if [[ -z $CCVM_ADMIN_USER ]]; then skip "authorized_keys check (admin user unknown: /etc/ccvm/ccvm.conf needs root to read)"
+elif [[ -s /home/$CCVM_ADMIN_USER/.ssh/authorized_keys ]]; then pass "authorized_keys present"
+else fail "no authorized_keys for admin user"; fi
 
 echo "== Accounts"
 if need_root "root password status"; then

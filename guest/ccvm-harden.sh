@@ -53,7 +53,7 @@ source "$CONF"
 : "${CCVM_CLAUDE_AUTO_UPDATE:=no}"
 : "${CCVM_CLAUDE_MODE:=default}"             # default | acceptEdits | auto
 : "${CCVM_CLAUDE_POLICY:=strict}"            # strict | standard
-: "${CCVM_CLAUDE_DOCKER:=no}"
+: "${CCVM_CLAUDE_DOCKER:=no}"; : "${CCVM_CLAUDE_REMOTE:=no}"
 : "${CCVM_CLAUDE_DOMAINS:=github.com api.github.com codeload.github.com objects.githubusercontent.com raw.githubusercontent.com registry.npmjs.org pypi.org files.pythonhosted.org proxy.golang.org sum.golang.org}"
 : "${CCVM_SUDO_MODE:=password}"              # password | nopasswd
 : "${CCVM_STATE_DIR:=/var/lib/ccvm}"
@@ -350,6 +350,7 @@ claude_policy() {
     --arg mode "$CCVM_CLAUDE_MODE" \
     --arg policy "$CCVM_CLAUDE_POLICY" \
     --arg channel "$CCVM_CLAUDE_CHANNEL" \
+    --arg remote "$CCVM_CLAUDE_REMOTE" \
     --argjson domains "$domains_json" \
     --argjson sockets "$sockets_json" \
     --arg home "$ADMIN_HOME" '
@@ -392,12 +393,11 @@ claude_policy() {
           + (if $sockets == [] then {} else { allowUnixSockets: $sockets } end)
           + (if $policy == "strict" then { allowManagedDomainsOnly: true } else {} end))
       },
-      env: {
+      env: ({
         DISABLE_TELEMETRY: "1",
         DISABLE_ERROR_REPORTING: "1",
-        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
         DISABLE_AUTOUPDATER: "1"
-      },
+      } + (if $remote == "yes" then {} else { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" } end)),
       autoUpdatesChannel: $channel
     }
     + (if $policy == "strict" then {
