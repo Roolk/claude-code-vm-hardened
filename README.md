@@ -15,9 +15,11 @@ upstream code as root every night. Here:
 - **Claude Code runs under an enforced policy**: sandbox required, no unsandboxed retries, bypass mode disabled,
   secret files and env vars denied, network allow-list, telemetry off.
 
-> **Status: beta.** The in-VM hardening was tested in an Ubuntu 26.04 systemd environment, including real SSH
-> attacks against it. The Proxmox-side script (`provision.sh`) has **not** been exercised against a live Proxmox host
-> by the author. Try it with a spare VM ID first and read [Limitations](#limitations).
+> **Status: beta.** `provision.sh` has been run end-to-end on a real Proxmox VE host (ZFS-backed VM storage,
+> DHCP, rootless Docker, Claude Code `stable`) and produced a VM that boots, accepts the admin's SSH key and passes
+> `ccvm-doctor`. That first run found several bugs, which are fixed in this repo. The in-VM hardening was also tested
+> in an Ubuntu 26.04 environment, including real SSH attacks against it. Everything else (see
+> [Limitations](#limitations)) is untested, so try it with a spare VM ID first.
 
 ## Quick start
 
@@ -91,8 +93,10 @@ See [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) for what this does and does not
 
 Please read these before trusting it:
 
-- **`provision.sh` is untested on a live Proxmox host.** It uses standard `qm`/`pvesm` calls and generates
-  cloud-init that passes cloud-init's schema validator, but expect to fix small things on first run.
+- **Tested on one Proxmox setup only.** The successful run used ZFS storage for the VM disk, `local` for snippets,
+  OVMF/UEFI, DHCP, and no VLAN. Not yet exercised: static IPs, VLAN tags, LVM/Ceph/other storage types, clusters,
+  `--bios seabios`, the `none`/auto-reboot update policies, non-default SSH ports, and the "block LAN egress" option.
+  Expect to fix small things if you use them, and please open an issue.
 - **Claude Code's sandbox covers shell commands only.** File tools, MCP servers, hooks and plugins run outside it.
   The `strict` policy blocks user-added hooks/MCP/marketplaces for that reason.
 - **Docker + sandbox:** letting Claude's sandbox reach the rootless Docker socket (an opt-in prompt) means a container
