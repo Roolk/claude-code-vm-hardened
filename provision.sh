@@ -407,15 +407,15 @@ render_userdata() {
     echo '    owner: root:root'
     echo '    content: |'
     render_conf | sed 's/^/      /'
-    echo '  - path: /var/lib/ccvm/bundle.b64'
+    echo '  - path: /var/lib/ccvm/bundle.tgz'
     echo "    permissions: '0600'"
     echo '    owner: root:root'
     echo '    encoding: b64'
     echo "    content: $bundle"
     echo 'runcmd:'
     echo '  - [ systemctl, enable, --now, qemu-guest-agent ]'
-    echo '  - [ bash, -c, "set -e; install -d -m 0755 /opt/ccvm; base64 -d /var/lib/ccvm/bundle.b64 | tar -xz -C /opt/ccvm; rm -f /var/lib/ccvm/bundle.b64" ]'
-    echo '  - [ bash, -c, "set -o pipefail; /opt/ccvm/guest/ccvm-harden.sh 2>&1 | tee /var/log/ccvm-harden.log" ]'
+    echo '  - [ bash, -c, "set -e; install -d -m 0755 /opt/ccvm; tar -xzf /var/lib/ccvm/bundle.tgz -C /opt/ccvm; rm -f /var/lib/ccvm/bundle.tgz" ]'
+    echo '  - [ bash, -c, "set -o pipefail; /opt/ccvm/guest/ccvm-harden.sh 2>&1 | tee /var/log/ccvm-harden.log || touch /var/lib/ccvm/harden.failed" ]'
   }
 }
 
@@ -426,7 +426,7 @@ fetch_image() {
   local base="https://cloud-images.ubuntu.com/releases/$UBUNTU_RELEASE/release"
   local img="ubuntu-$UBUNTU_RELEASE-server-cloudimg-$arch.img"
   install -d -m 0700 "$CACHE_DIR"
-  local gh; gh=$(mktemp -d); trap 'rm -rf "$gh"' RETURN
+  local gh; gh=$(mktemp -d)
   chmod 700 "$gh"
 
   info "Fetching checksums and signature from cloud-images.ubuntu.com"
@@ -440,6 +440,7 @@ fetch_image() {
   status=$(GNUPGHOME=$gh gpg --batch --status-fd 1 --verify "$CACHE_DIR/SHA256SUMS.gpg" "$CACHE_DIR/SHA256SUMS" 2>/dev/null || true)
   grep -q "^\[GNUPG:\] VALIDSIG .*$UBUNTU_IMAGE_KEY_FPR" <<<"$status" \
     || die "SHA256SUMS signature is NOT valid for Canonical's image-signing key - aborting"
+  rm -rf "$gh"
   ok "SHA256SUMS signature verified (key $UBUNTU_IMAGE_KEY_FPR)"
 
   local want; want=$(awk -v f="*$img" '$2==f {print $1}' "$CACHE_DIR/SHA256SUMS")
@@ -512,11 +513,30 @@ first_boot() {
   confirm "Start the VM now and wait for first-boot hardening to finish?" y || { say "Start it later with: qm start $CCVM_VMID"; return 0; }
   qm start "$CCVM_VMID"
   info "First boot downloads and installs packages - this takes several minutes."
-  local t=0 limit=1500
-  until gexec test -f /var/lib/ccvm/harden.done 2>/dev/null; do
+  local t=0 limit=1800 step last="" agent=0
+  while :; do
+    # one guest call: done? failed? and the latest ">>>" step from the hardening log
+    if st=$(gexec bash -c 'if [ -f /var/lib/ccvm/harden.done ]; then echo DONE; elif [ -f /var/lib/ccvm/harden.failed ]; then echo FAILED; else grep -h "^>>>" /var/log/ccvm-harden.log 2>/dev/null | tail -n1; fi' 2>/dev/null); then
+      agent=1; st=${st//$'\n'/}
+      case $st in
+        DONE) break ;;
+        FAILED)
+          warn "the hardening script FAILED inside the VM. Last log lines:"
+          gexec tail -n 25 /var/log/ccvm-harden.log || true
+          warn "full log: qm guest exec $CCVM_VMID -- cat /var/log/ccvm-harden.log"; return 1 ;;
+        *) step=${st:-"waiting for the hardening script to start (installing the guest agent / unpacking)"} ;;
+      esac
+    else
+      step="VM booting / cloud-init running (guest agent not up yet)"
+    fi
+    if [[ $step != "$last" ]] || (( t % 120 == 0 && t > 0 )); then
+      info "[${t}s] $step"; last=$step
+    fi
     sleep 10; t=$((t+10))
-    (( t % 60 == 0 )) && info "still working... (${t}s)"
-    (( t < limit )) || { warn "timed out waiting for hardening. Check: qm terminal $CCVM_VMID  or  qm guest exec $CCVM_VMID -- tail -n 50 /var/log/ccvm-harden.log"; return 0; }
+    (( t < limit )) || {
+      warn "timed out after ${limit}s (guest agent reached: $([[ $agent == 1 ]] && echo yes || echo no))."
+      warn "check: qm terminal $CCVM_VMID   or   qm guest exec $CCVM_VMID -- tail -n 50 /var/log/cloud-init-output.log"
+      return 1; }
   done
   ok "hardening finished; rebooting once to load the updated kernel"
   qm reboot "$CCVM_VMID" || warn "could not reboot automatically; reboot it yourself"
