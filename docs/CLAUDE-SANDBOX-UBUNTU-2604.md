@@ -18,7 +18,7 @@ Upstream: https://github.com/anthropics/claude-code/issues/101946 (open when thi
 
 Affects only programs that run `/usr/bin/bwrap` (Claude Code; Flatpak if installed). It switches off Ubuntu 26.04's
 extra user-namespace restriction *for bwrap*; the sandbox's filesystem, network and seccomp rules stay in force.
-Reported to work in the upstream thread; not yet verified by this project on a live VM.
+Reported in the upstream thread and confirmed working on a live VM (Ubuntu 26.04, Claude Code 2.1.311): `bwrap` reports `unconfined` and Claude runs commands. `provision.sh` applies this by default (it asks first).
 
 ```bash
 sudo tee /etc/apparmor.d/bwrap >/dev/null <<'EOT'

@@ -57,7 +57,7 @@ This is deliberately **not** a `curl | bash` installer: the guest scripts are bu
 | Block LAN egress | On by default: the VM can reach the internet, gateway and DNS, but not your private ranges |
 | IPv6 | Disabled by default |
 | Docker | Rootless (default) or none |
-| Claude Code | Install or not; `stable` or `latest` channel; update policy; **strict** or **standard** policy; permission mode; sandbox domain allow-list; Remote Control (off by default) and whether it starts at boot; Docker access for Claude (no / ask every time / all Unix sockets) |
+| Claude Code | Install or not; `stable` or `latest` channel; update policy; **strict** or **standard** policy; permission mode; sandbox domain allow-list; the Ubuntu 26.04 AppArmor workaround that lets the sandbox start (on by default); Remote Control (off by default) and whether it starts at boot; Docker access for Claude (no / ask every time / all Unix sockets) |
 
 Every prompt can be pre-answered with an environment variable (`CCVM_VMID`, `CCVM_ADMIN_USER`, ...) plus
 `CCVM_NONINTERACTIVE=1`; see the top of `provision.sh` and `tests/lint.sh` for an example. A non-interactive run only
@@ -158,8 +158,9 @@ Please read these before trusting it:
   AppArmor profile (`/etc/apparmor.d/bwrap-userns-restrict`) that blocks the nested user namespace Claude Code's
   `apply-seccomp` helper needs, so each sandboxed command dies with `apply-seccomp: ... Permission denied`. This is an
   upstream interaction (see [anthropics/claude-code#101946](https://github.com/anthropics/claude-code/issues/101946)),
-  and `sudo ccvm-doctor` reports it as a FAIL. Because `failIfUnavailable` and "no unsandboxed retry" are enforced,
-  Claude cannot run commands until it is fixed. See [docs/CLAUDE-SANDBOX-UBUNTU-2604.md](docs/CLAUDE-SANDBOX-UBUNTU-2604.md).
+  so `provision.sh` applies the documented workaround by default (it asks first), and `sudo ccvm-doctor` fails
+  if the sandbox cannot start. Because `failIfUnavailable` and "no unsandboxed retry" are enforced, Claude cannot
+  run commands until it works. See [docs/CLAUDE-SANDBOX-UBUNTU-2604.md](docs/CLAUDE-SANDBOX-UBUNTU-2604.md).
 - **Docker access weakens the sandbox.** Any of the Docker options above gives containers everything the admin user
   can reach; see [Docker access for Claude](#docker-access-for-claude).
 - **Rootless Docker limits:** no privileged containers, no binding ports below 1024, slower user-space networking.
