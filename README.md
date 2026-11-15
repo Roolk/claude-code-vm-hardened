@@ -133,7 +133,8 @@ token (`url.*`, `http.*`, `credential.*`, `include*`, `core.hooksPath`, `remote.
 root-owned in `/usr/local/bin`, so Claude cannot rewrite it either. For the strongest setup, also add a GitHub ruleset
 that requires a pull request to change `main`.
 
-Its checks and hook-blocking were tested against a clone of this repo; a real push with it has not been made yet.
+**Tested:** its checks and hook-blocking were tested against a clone of this repo, and it made a real push to GitHub
+from a VM (the branch behind this repo's pull request #1).
 
 ### Changing Claude's domain allow-list (untested)
 
