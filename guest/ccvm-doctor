@@ -131,6 +131,21 @@ if [[ $CCVM_INSTALL_CLAUDE == yes ]]; then
       fail "Claude sandbox CANNOT start: bwrap nested user namespace is blocked (AppArmor context: ${ctx:-unknown}). See README, 'Known issue: Claude sandbox on Ubuntu 26.04'"
     fi
   else warn "cannot test the Claude sandbox (bwrap or unshare missing)"; fi
+  if [[ ${CCVM_CLAUDE_RC_AUTOSTART:-no} == yes && -n $CCVM_ADMIN_USER ]] && need_root "Remote Control autostart"; then
+    uid=$(id -u "$CCVM_ADMIN_USER")
+    asuser=(runuser -u "$CCVM_ADMIN_USER" -- env XDG_RUNTIME_DIR="/run/user/$uid")
+    rc_state=$(cut -d' ' -f1 "/run/user/$uid/ccvm-claude-rc.status" 2>/dev/null)
+    if ! (cd / && "${asuser[@]}" systemctl --user is-active --quiet ccvm-claude-rc.service) \
+       || ! (cd / && "${asuser[@]}" tmux has-session -t claude-rc 2>/dev/null); then
+      warn "Remote Control autostart is not running (untested feature): systemctl --user status ccvm-claude-rc"
+    elif [[ $rc_state == not-signed-in ]]; then
+      warn "Remote Control is waiting: Claude is NOT signed in. As $CCVM_ADMIN_USER run 'claude' and sign in"
+    elif [[ $rc_state == running ]]; then
+      pass "Remote Control running at boot (tmux session claude-rc)"
+    else
+      warn "Remote Control state '${rc_state:-unknown}' (untested feature): tmux attach -t claude-rc"
+    fi
+  fi
 fi
 
 echo "== Pending"

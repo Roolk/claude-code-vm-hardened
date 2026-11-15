@@ -1,0 +1,17 @@
+# Managed by ccvm-harden. UNTESTED. A systemd *user* unit: keeps Claude Code
+# Remote Control running in the tmux session "claude-rc" from boot (the admin
+# user has linger enabled). Attach with:  tmux attach -t claude-rc
+[Unit]
+Description=Claude Code Remote Control in tmux session claude-rc (ccvm)
+
+[Service]
+Type=forking
+WorkingDirectory=%h/@RC_DIR@
+Environment=DOCKER_HOST=unix://%t/docker.sock
+ExecStart=/usr/bin/tmux new-session -d -s claude-rc /usr/local/libexec/ccvm-claude-rc-loop
+ExecStop=/usr/bin/tmux kill-session -t claude-rc
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target

@@ -56,7 +56,7 @@ It is intentionally **not** a `curl | bash` installer: the guest scripts are bun
 | Block LAN egress | On by default: the VM can reach the internet, gateway and DNS, not your private ranges |
 | IPv6 | Disabled by default |
 | Docker | Rootless (default) or none |
-| Claude Code | Install yes/no, `stable` or `latest` channel, update policy, **strict/standard** policy, permission mode, Remote Control on/off (off by default), sandbox domain allow-list, Docker access for Claude (no / approve each command / all Unix sockets) |
+| Claude Code | Install yes/no, `stable` or `latest` channel, update policy, **strict/standard** policy, permission mode, Remote Control on/off (off by default) and whether it starts at boot in tmux (untested), sandbox domain allow-list, Docker access for Claude (no / approve each command / all Unix sockets) |
 
 Every prompt can be pre-answered with an environment variable (`CCVM_VMID`, `CCVM_ADMIN_USER`, ...) and
 `CCVM_NONINTERACTIVE=1`; see the top of `provision.sh` and `tests/lint.sh` for an example. A non-interactive run
@@ -78,6 +78,18 @@ sudo ccvm-domains list  # Claude's sandbox domain allow-list (also: add / remove
 It has **not yet been run on a provisioned VM**: back up both files first
 (`sudo cp -a /etc/ccvm/ccvm.conf /etc/claude-code/managed-settings.json /root/`). Only root can change the list,
 so Claude cannot, but anything that learns your sudo password can.
+
+**Remote Control at boot (untested).** If you enable Remote Control, `provision.sh` offers to keep `claude rc`
+running from boot in the tmux session `claude-rc`, so the VM is reachable from claude.ai/code or the Claude app
+after every reboot without logging in over SSH. A root-owned systemd *user* unit
+(`/etc/systemd/user/ccvm-claude-rc.service`, linger enabled) starts a loop that restarts `claude remote-control`
+15 s after it exits. Log in once by running `claude` in the chosen folder (default `~/projects`), which also
+answers the folder-trust question; the loop picks it up. `tmux attach -t claude-rc` shows it (detach with
+`Ctrl-b d`), `systemctl --user stop ccvm-claude-rc` stops it until the next boot, and `systemctl --user disable
+ccvm-claude-rc` turns it off. If Claude is not signed in (never logged in, or the login expired), Remote Control
+is not started and you are told: a yellow notice when you SSH in, a warning from `sudo ccvm-doctor`, a line in the
+tmux session, and a journal entry (`journalctl -t ccvm-claude-rc`). It checks again every minute, so signing in with
+`claude` is all it takes. It has **not yet been run on a provisioned VM**; `ccvm-doctor` only warns about it. Remote Control sessions follow the same managed policy (sandbox, permission mode) as any other.
 
 The provisioner prints the VM's SSH **host key fingerprint** from inside the guest. Compare it with what `ssh` shows
 on your first connection - that is your protection against a man-in-the-middle on first contact.

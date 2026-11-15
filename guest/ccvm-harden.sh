@@ -54,6 +54,8 @@ source "$CONF"
 : "${CCVM_CLAUDE_MODE:=default}"             # default | acceptEdits | auto
 : "${CCVM_CLAUDE_POLICY:=strict}"            # strict | standard
 : "${CCVM_CLAUDE_DOCKER:=no}"; : "${CCVM_CLAUDE_REMOTE:=no}"
+: "${CCVM_CLAUDE_RC_AUTOSTART:=no}"          # yes = Remote Control in tmux from boot (untested)
+: "${CCVM_CLAUDE_RC_DIR:=projects}"          # folder under the admin's home that it serves
 : "${CCVM_CLAUDE_DOMAINS:=github.com api.github.com codeload.github.com objects.githubusercontent.com raw.githubusercontent.com registry.npmjs.org pypi.org files.pythonhosted.org proxy.golang.org sum.golang.org}"
 : "${CCVM_SUDO_MODE:=password}"              # password | nopasswd
 : "${CCVM_STATE_DIR:=/var/lib/ccvm}"
@@ -84,6 +86,9 @@ case $CCVM_SUDO_MODE in password|nopasswd) ;; *) die "bad CCVM_SUDO_MODE" ;; esa
 [[ $CCVM_CLAUDE_DOCKER == yes ]] && CCVM_CLAUDE_DOCKER=socket   # older configs: yes meant socket access
 case $CCVM_CLAUDE_DOCKER in no|prompt|socket) ;; *) die "bad CCVM_CLAUDE_DOCKER" ;; esac
 [[ $CCVM_DOCKER == rootless ]] || CCVM_CLAUDE_DOCKER=no
+case $CCVM_CLAUDE_RC_AUTOSTART in yes|no) ;; *) die "bad CCVM_CLAUDE_RC_AUTOSTART" ;; esac
+[[ $CCVM_CLAUDE_RC_DIR =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ && /$CCVM_CLAUDE_RC_DIR/ != */../* ]] \
+  || die "CCVM_CLAUDE_RC_DIR must be a plain path under the admin's home: $CCVM_CLAUDE_RC_DIR"
 
 id "$CCVM_ADMIN_USER" >/dev/null 2>&1 || die "admin user $CCVM_ADMIN_USER does not exist (cloud-init should have created it)"
 ADMIN_UID=$(id -u "$CCVM_ADMIN_USER")
@@ -96,8 +101,20 @@ install -d -m 0755 "$CCVM_STATE_DIR"
 render() {
   sed -e "s|@ADMIN_USER@|$CCVM_ADMIN_USER|g" \
       -e "s|@AGENT_FORWARDING@|$CCVM_SSH_AGENT_FWD|g" \
-      -e "s|@TCP_FORWARDING@|$CCVM_SSH_TCP_FWD|g" "$1"
+      -e "s|@TCP_FORWARDING@|$CCVM_SSH_TCP_FWD|g" \
+      -e "s|@RC_DIR@|$CCVM_CLAUDE_RC_DIR|g" "$1"
 }
+
+# Start the admin's systemd user manager and keep it running without a login.
+# Returns 1 if its D-Bus socket does not appear.
+user_manager_up() {
+  loginctl enable-linger "$CCVM_ADMIN_USER"
+  systemctl start "user@${ADMIN_UID}.service"
+  local i=0
+  while [[ ! -S /run/user/$ADMIN_UID/bus && $i -lt 30 ]]; do sleep 1; i=$((i+1)); done
+  [[ -S /run/user/$ADMIN_UID/bus ]]
+}
+USER_ENV="XDG_RUNTIME_DIR=/run/user/$ADMIN_UID DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$ADMIN_UID/bus"
 
 # ── 1. Base system ──────────────────────────────────────────────────────────
 base_system() {
@@ -445,22 +462,17 @@ docker_rootless() {
   grep -q "^$CCVM_ADMIN_USER:" /etc/subuid || usermod --add-subuids 100000-165535 "$CCVM_ADMIN_USER"
   grep -q "^$CCVM_ADMIN_USER:" /etc/subgid || usermod --add-subgids 100000-165535 "$CCVM_ADMIN_USER"
 
-  loginctl enable-linger "$CCVM_ADMIN_USER"
-  systemctl start "user@${ADMIN_UID}.service"
-  local i=0
-  while [[ ! -S /run/user/$ADMIN_UID/bus && $i -lt 30 ]]; do sleep 1; i=$((i+1)); done
-  [[ -S /run/user/$ADMIN_UID/bus ]] || { WARN "user bus not available; rootless Docker setup skipped"; return 0; }
+  user_manager_up || { WARN "user bus not available; rootless Docker setup skipped"; return 0; }
 
   local setup=/usr/share/docker.io/contrib/dockerd-rootless-setuptool.sh
   [[ -x $setup ]] || setup=$(command -v dockerd-rootless-setuptool.sh || true)
   [[ -n $setup ]] || { WARN "dockerd-rootless-setuptool.sh not found"; return 0; }
 
-  local rt="XDG_RUNTIME_DIR=/run/user/$ADMIN_UID DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$ADMIN_UID/bus"
   # shellcheck disable=SC2086
-  runuser -u "$CCVM_ADMIN_USER" -- env $rt PATH="/usr/share/docker.io/contrib:$PATH" "$setup" install --force \
+  runuser -u "$CCVM_ADMIN_USER" -- env $USER_ENV PATH="/usr/share/docker.io/contrib:$PATH" "$setup" install --force \
     || WARN "rootless Docker setup reported errors"
   # shellcheck disable=SC2086
-  runuser -u "$CCVM_ADMIN_USER" -- env $rt systemctl --user enable --now docker.service \
+  runuser -u "$CCVM_ADMIN_USER" -- env $USER_ENV systemctl --user enable --now docker.service \
     || WARN "could not enable the user docker service"
 
   # Point the admin's shells at the rootless socket.
@@ -474,7 +486,40 @@ docker_rootless() {
   fi
 }
 
-# ── 9. Tools and finish ─────────────────────────────────────────────────────
+# ── 9. Remote Control at boot (UNTESTED) ────────────────────────────────────
+# A root-owned systemd user unit keeps `claude remote-control` running in the
+# tmux session "claude-rc". Linger starts it at boot with nobody logged in.
+claude_rc_autostart() {
+  local unit=/etc/systemd/user/ccvm-claude-rc.service
+  if [[ $CCVM_INSTALL_CLAUDE != yes || $CCVM_CLAUDE_REMOTE != yes || $CCVM_CLAUDE_RC_AUTOSTART != yes ]]; then
+    if [[ -f $unit ]]; then
+      LOG "Removing Remote Control autostart"
+      # shellcheck disable=SC2086
+      runuser -u "$CCVM_ADMIN_USER" -- env $USER_ENV systemctl --user disable --now ccvm-claude-rc.service 2>/dev/null || true
+      rm -f "$unit" /usr/local/libexec/ccvm-claude-rc-loop /etc/profile.d/ccvm-claude-rc.sh
+    fi
+    return 0
+  fi
+  LOG "Starting Claude Remote Control at boot in tmux session claude-rc (~/$CCVM_CLAUDE_RC_DIR) - untested"
+  apt-get install -y -qq --no-install-recommends tmux
+  install -d -m 0755 /usr/local/libexec /etc/systemd/user
+  install -m 0755 -o root -g root "$FILES_DIR/ccvm-claude-rc-loop" /usr/local/libexec/ccvm-claude-rc-loop
+  # SSH login notice when Remote Control is waiting for you to sign in.
+  install -m 0644 -o root -g root "$FILES_DIR/ccvm-claude-rc-profile.sh" /etc/profile.d/ccvm-claude-rc.sh
+  render "$FILES_DIR/ccvm-claude-rc.service.in" > "$unit"
+  chmod 0644 "$unit"
+  install -d -m 0750 -o "$CCVM_ADMIN_USER" -g "$CCVM_ADMIN_USER" "$ADMIN_HOME/$CCVM_CLAUDE_RC_DIR"
+
+  user_manager_up || { WARN "user bus not available; Remote Control autostart not enabled"; return 0; }
+  # enable + start, never restart: a re-run must not kill a session in use.
+  # shellcheck disable=SC2086
+  runuser -u "$CCVM_ADMIN_USER" -- env $USER_ENV systemctl --user daemon-reload || true
+  # shellcheck disable=SC2086
+  runuser -u "$CCVM_ADMIN_USER" -- env $USER_ENV systemctl --user enable --now ccvm-claude-rc.service \
+    || WARN "could not start the Remote Control service (it retries after you log in with 'claude')"
+}
+
+# ── 10. Tools and finish ────────────────────────────────────────────────────
 tooling() {
   LOG "Installing ccvm-update, ccvm-doctor and ccvm-domains"
   local here
@@ -497,6 +542,7 @@ main() {
   updates
   claude_code
   docker_rootless
+  claude_rc_autostart
   tooling
   date -u +%FT%TZ > "$CCVM_STATE_DIR/harden.done"
   LOG "ccvm-harden complete"
