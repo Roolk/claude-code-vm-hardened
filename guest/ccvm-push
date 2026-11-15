@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ccvm-push - push commits to GitHub yourself, from an SSH session, with a token
 # you type in. Claude commits; you review and push. The token is read from the
-# terminal, used for this one push and never stored. UNTESTED until run on a VM.
+# terminal, used for this one push and never stored.
 #
 #   cd ~/repos/<repo> && ccvm-push       push the current branch
 #   ccvm-push <branch>...                push the named branches
