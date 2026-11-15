@@ -6,6 +6,25 @@
 #   sudo ccvm-update --check    list what would change, change nothing
 set -uo pipefail
 export DEBIAN_FRONTEND=noninteractive
+
+case ${1:-} in
+  -h|--help)
+    cat <<'EOF'
+Usage: sudo ccvm-update [--check]
+
+  (no option)   apt update + upgrade of the OS and Claude Code (new kernels included),
+                autoremove, then run ccvm-doctor. Says when a reboot is needed.
+  --check       list the packages that would be upgraded; change nothing.
+
+Only signed apt repositories are used (Ubuntu, Anthropic); nothing runs from cron.
+
+EOF
+    cat /usr/local/share/ccvm/commands.txt 2>/dev/null || echo "(the ccvm command list is not installed)"
+    exit 0 ;;
+  ""|--check) ;;
+  *) echo "unknown option: $1 (try: ccvm-update -h)" >&2; exit 2 ;;
+esac
+
 [[ $EUID -eq 0 ]] || { echo "run as root: sudo ccvm-update" >&2; exit 1; }
 
 if [[ ${1:-} == --check ]]; then

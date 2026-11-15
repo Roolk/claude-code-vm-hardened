@@ -33,7 +33,7 @@ less provision.sh guest/ccvm-harden.sh     # review before you run it - it is sh
 ```
 
 To try it without changing anything, run `./provision.sh --dry-run`: it asks the questions and writes the generated
-cloud-init file to `./out/user-data.yaml`.
+cloud-init file to `./out/user-data.yaml`. `./provision.sh -h` lists its options.
 
 You need Proxmox VE 8 or 9, root, internet access from the node, one storage that allows **Disk image** content and
 one that allows **Snippets**. Snippets only work on a *directory*-type storage (not ZFS, LVM-thin or Ceph), so enable
@@ -72,6 +72,7 @@ sudo ccvm-doctor        # read-only checks against the hardening baseline
 sudo ccvm-update        # manual update of the OS and Claude Code, then runs the doctor
 sudo ccvm-domains list  # show Claude's sandbox domain allow-list (untested, see below)
 ccvm-push               # push the current repo's branch to GitHub with a token you type in (see below)
+ccvm-doctor -h          # any ccvm command with -h: its options, plus a list of all ccvm commands
 ```
 
 The provisioner prints the VM's SSH **host key fingerprint**, read from inside the guest. Compare it with what `ssh`

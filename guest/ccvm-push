@@ -20,6 +20,24 @@ unset GIT_ASKPASS SSH_ASKPASS GIT_DIR GIT_WORK_TREE GIT_CONFIG_PARAMETERS GIT_CO
 die() { printf '[FAIL] %s\n' "$*" >&2; exit 1; }
 g() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false "$@"; }
 
+case ${1:-} in
+  -h|--help)
+    cat <<'EOF'
+Usage: ccvm-push                push the current branch of the repo you are in
+       ccvm-push <branch>...    push the named branches
+
+Run it yourself in an SSH session, inside the repo. It asks for a GitHub token
+(fine-grained, limited to the repo, Contents: Read and write, short expiry),
+shows the commits GitHub does not have yet, and pushes after you confirm. It never
+force-pushes and never stores the token. The repo's hooks are disabled, and it
+refuses if git config could redirect the push or the token.
+
+EOF
+    cat /usr/local/share/ccvm/commands.txt 2>/dev/null || echo "(the ccvm command list is not installed)"
+    exit 0 ;;
+  -*) die "unknown option: $1 (try: ccvm-push -h)" ;;
+esac
+
 [[ -t 0 && -r /dev/tty ]] || die "run this yourself, in an interactive SSH session"
 g rev-parse --git-dir >/dev/null 2>&1 || die "not inside a git repository"
 

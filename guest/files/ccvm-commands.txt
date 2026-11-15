@@ -1,0 +1,13 @@
+ccvm commands on this VM (each one accepts -h for its own options):
+
+  sudo ccvm-doctor                Read-only health check against the hardening baseline.
+                                  Exit 1 if any check FAILs. Without sudo, root-only checks are skipped.
+  sudo ccvm-update [--check]      Update the OS and Claude Code from signed apt repositories, then run
+                                  the doctor. --check lists pending updates and changes nothing.
+  sudo ccvm-domains list|add|remove [domain...]
+                                  Show or change the domains Claude's sandboxed shell may reach.
+  ccvm-push [branch...]           Push a repo's branch to GitHub with a token you type in. Run it
+                                  yourself over SSH, inside the repo; it never stores the token.
+  sudo /opt/ccvm/guest/ccvm-harden.sh
+                                  Re-apply the whole hardening from /etc/ccvm/ccvm.conf. Changes
+                                  system config (firewall reset, package upgrades, SSH restart).
