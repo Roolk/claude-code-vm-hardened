@@ -9,7 +9,7 @@ CONF=/etc/ccvm/ccvm.conf
 [[ -r $CONF ]] && source "$CONF"
 : "${CCVM_ADMIN_USER:=}"; : "${CCVM_SSH_PORT:=22}"; : "${CCVM_DOCKER:=rootless}"
 : "${CCVM_INSTALL_CLAUDE:=yes}"; : "${CCVM_UPDATE_POLICY:=security}"
-: "${CCVM_EGRESS_BLOCK_LAN:=yes}"
+: "${CCVM_EGRESS_BLOCK_LAN:=yes}"; : "${CCVM_DISABLE_IPV6:=yes}"
 
 fails=0; warns=0
 if [[ $EUID -ne 0 ]]; then
@@ -39,7 +39,7 @@ if need_root "sshd effective config"; then
   grep -qiE '^authenticationmethods publickey$' <<<"$cfg" && pass "AuthenticationMethods publickey" || fail "AuthenticationMethods not publickey-only"
 fi
 if [[ -z $CCVM_ADMIN_USER ]]; then skip "authorized_keys check (admin user unknown: /etc/ccvm/ccvm.conf needs root to read)"
-elif [[ -s /home/$CCVM_ADMIN_USER/.ssh/authorized_keys ]]; then pass "authorized_keys present"
+elif [[ -s $(getent passwd "$CCVM_ADMIN_USER" | cut -d: -f6)/.ssh/authorized_keys ]]; then pass "authorized_keys present"
 else fail "no authorized_keys for admin user"; fi
 
 echo "== Accounts"
@@ -59,6 +59,9 @@ if need_root "ufw status"; then
   grep -qE "(^|[^0-9])$CCVM_SSH_PORT/tcp +ALLOW IN +(Anywhere|0\.0\.0\.0/0)( |$)" <<<"$out" && fail "SSH is open to Anywhere" || pass "SSH is not open to Anywhere"
   if [[ $CCVM_EGRESS_BLOCK_LAN == yes ]]; then
     grep -qE '192\.168\.0\.0/16 +DENY OUT' <<<"$out" && pass "egress to private ranges is blocked" || fail "LAN egress block rules missing"
+    if [[ $CCVM_DISABLE_IPV6 != yes ]]; then
+      grep -qE 'fc00::/7 +DENY OUT' <<<"$out" && pass "IPv6 egress to ULA/link-local is blocked" || fail "IPv6 LAN egress block rules missing"
+    fi
   fi
 fi
 
@@ -126,7 +129,7 @@ fi
 
 echo "== Pending"
 [[ -f /var/run/reboot-required ]] && warn "reboot required ($(tr '\n' ' ' </var/run/reboot-required.pkgs 2>/dev/null))" || pass "no reboot pending"
-n=$(apt-get -s upgrade 2>/dev/null | grep -c '^Inst ' || true)
+n=$(apt-get -s --with-new-pkgs upgrade 2>/dev/null | grep -c '^Inst ' || true)
 [[ ${n:-0} -eq 0 ]] && pass "no upgrades pending" || warn "$n package upgrade(s) pending (run: sudo ccvm-update)"
 
 echo

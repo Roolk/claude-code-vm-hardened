@@ -62,7 +62,8 @@ source "$CONF"
 # shell, sshd and firewall syntax anyway.
 [[ $CCVM_ADMIN_USER =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || die "invalid admin user name"
 [[ $CCVM_ADMIN_USER != root ]] || die "admin user must not be root"
-[[ $CCVM_SSH_PORT =~ ^[0-9]{1,5}$ ]] || die "invalid ssh port"
+[[ $CCVM_SSH_PORT =~ ^[1-9][0-9]{0,4}$ ]] && (( CCVM_SSH_PORT <= 65535 )) || die "invalid ssh port"
+[[ -z $CCVM_DNS || $CCVM_DNS =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || die "invalid dns server: $CCVM_DNS"
 for s in ${CCVM_SSH_SOURCES//,/ }; do
   [[ $s =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}(/[0-9]{1,2})?$ ]] || die "invalid ssh source: $s"
 done
@@ -102,7 +103,8 @@ base_system() {
 
   LOG "Updating and upgrading OS packages"
   apt-get update -qq
-  apt-get upgrade -y -qq
+  # --with-new-pkgs: a kernel update arrives as a NEW package, which plain upgrade keeps back.
+  apt-get upgrade -y -qq --with-new-pkgs
 
   LOG "Installing security tooling"
   apt-get install -y -qq --no-install-recommends \
@@ -231,6 +233,13 @@ firewall() {
     for net in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10; do
       ufw deny out to "$net" comment 'ccvm no-lan' >/dev/null
     done
+    # With IPv6 on, the LAN is also reachable via link-local and ULA addresses.
+    # Neighbour discovery and DHCPv6 are accepted earlier by ufw's before6.rules.
+    if [[ $CCVM_DISABLE_IPV6 != yes ]]; then
+      for net in fe80::/10 fc00::/7; do
+        ufw deny out to "$net" comment 'ccvm no-lan' >/dev/null
+      done
+    fi
   fi
 
   ufw logging low >/dev/null
@@ -259,8 +268,10 @@ system_hardening() {
   systemctl restart systemd-journald
 
   install -m 0644 "$FILES_DIR/fail2ban.local" /etc/fail2ban/jail.d/10-ccvm.local
+  # Add the port to the existing [sshd] section: a second [sshd] header in the
+  # same file is a DuplicateSectionError and fail2ban refuses to start.
   if [[ $CCVM_SSH_PORT != 22 ]]; then
-    printf '\n[sshd]\nport = %s\n' "$CCVM_SSH_PORT" >> /etc/fail2ban/jail.d/10-ccvm.local
+    sed -i "/^\[sshd\]\$/a port = $CCVM_SSH_PORT" /etc/fail2ban/jail.d/10-ccvm.local
   fi
   systemctl enable fail2ban.service >/dev/null 2>&1 || true
   systemctl restart fail2ban.service || WARN "fail2ban did not start"

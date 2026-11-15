@@ -59,7 +59,8 @@ It is intentionally **not** a `curl | bash` installer: the guest scripts are bun
 | Claude Code | Install yes/no, `stable` or `latest` channel, update policy, **strict/standard** policy, permission mode, Remote Control on/off (off by default), sandbox domain allow-list, Docker-socket access |
 
 Every prompt can be pre-answered with an environment variable (`CCVM_VMID`, `CCVM_ADMIN_USER`, ...) and
-`CCVM_NONINTERACTIVE=1`; see the top of `provision.sh` and `tests/lint.sh` for an example.
+`CCVM_NONINTERACTIVE=1`; see the top of `provision.sh` and `tests/lint.sh` for an example. A non-interactive run
+only creates the VM if you also set `CCVM_CONFIRM=yes`.
 
 ## After it finishes
 
@@ -81,7 +82,7 @@ Make a DHCP reservation for the VM on your router if you used DHCP.
 | Image | GPG-verified `SHA256SUMS` (pinned key fingerprint) + checksum before import |
 | SSH | `publickey` only, `AllowUsers <admin>`, no root, no forwarding/X11/agent by default, ed25519 host key only, `mlkem768x25519` / curve25519 KEX, ChaCha20/AES-GCM, ETM MACs, 6 auth tries, 30 s grace, verbose logging, weak DH moduli removed, other drop-ins that re-enable passwords are neutralised |
 | Accounts | root password locked, cloud-init's NOPASSWD sudoers removed, `sudo` requires a password by default, password quality rules |
-| Firewall | `ufw` default-deny inbound, SSH only from your sources, optional egress block of RFC1918/CGNAT/link-local, IPv6 off |
+| Firewall | `ufw` default-deny inbound, SSH only from your sources, optional egress block of RFC1918/CGNAT/link-local (plus IPv6 ULA/link-local if IPv6 is kept), IPv6 off |
 | Kernel | sysctl hardening (kptr, dmesg, bpf, ptrace, redirects, rp_filter, syncookies, protected_*), rare protocols/filesystems blacklisted, core dumps off |
 | Detection | `auditd` rules on identity, SSH, sudo, firewall, Claude policy; `fail2ban` on sshd (nftables); persistent journal |
 | Updates | `unattended-upgrades` limited to the *-security* pockets; reboots only if you opt in |
