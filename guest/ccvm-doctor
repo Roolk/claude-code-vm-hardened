@@ -110,6 +110,12 @@ if [[ $CCVM_INSTALL_CLAUDE == yes ]]; then
       && pass "sandbox required, no unsandboxed retry" || fail "sandbox is not enforced in managed settings"
     jq -e '.permissions.disableBypassPermissionsMode == "disable"' "$f" >/dev/null 2>&1 \
       && pass "bypassPermissions mode disabled" || fail "bypassPermissions mode is not disabled"
+    if jq -e '.sandbox.network.allowAllUnixSockets == true' "$f" >/dev/null 2>&1; then
+      warn "sandbox can reach EVERY Unix socket (Docker, systemd user bus): sandboxed commands can escape it"
+    else pass "sandbox blocks Unix sockets"; fi
+    if jq -e '.sandbox.excludedCommands // [] | length > 0' "$f" >/dev/null 2>&1; then
+      warn "commands run outside the sandbox after approval: $(jq -r '.sandbox.excludedCommands | join(", ")' "$f")"
+    fi
   else fail "$f missing"; fi
   command -v bwrap >/dev/null && pass "bubblewrap installed" || fail "bubblewrap missing"
   command -v socat >/dev/null && pass "socat installed" || fail "socat missing"

@@ -47,9 +47,10 @@ Restart `claude` afterwards.
 
 ## Workaround B (weaker): allow all Unix sockets
 
-Settings-only. Reported upstream to make commands run by skipping the failing helper step. It removes Claude's Unix
-domain socket blocking, so sandboxed commands could reach local sockets (an ssh-agent, a Docker socket, D-Bus).
-Prefer A.
+Settings-only (`sandbox.network.allowAllUnixSockets: true`). Reported upstream to make commands run by skipping the
+failing helper step. It removes Claude's Unix domain socket blocking, so sandboxed commands can reach every local socket:
+an ssh-agent, the Docker socket, and the systemd user bus, through which `systemd-run --user ...` starts a process
+outside the sandbox. That makes it close to no sandbox at all. Prefer A.
 
 ## Not recommended
 - `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` (all programs, lost at reboot, and reported not to be

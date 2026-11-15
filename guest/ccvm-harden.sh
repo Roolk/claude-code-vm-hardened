@@ -81,6 +81,9 @@ case $CCVM_CLAUDE_POLICY in strict|standard) ;; *) die "bad CCVM_CLAUDE_POLICY" 
 case $CCVM_CLAUDE_CHANNEL in stable|latest) ;; *) die "bad CCVM_CLAUDE_CHANNEL" ;; esac
 case $CCVM_DOCKER in rootless|none) ;; *) die "bad CCVM_DOCKER" ;; esac
 case $CCVM_SUDO_MODE in password|nopasswd) ;; *) die "bad CCVM_SUDO_MODE" ;; esac
+[[ $CCVM_CLAUDE_DOCKER == yes ]] && CCVM_CLAUDE_DOCKER=socket   # older configs: yes meant socket access
+case $CCVM_CLAUDE_DOCKER in no|prompt|socket) ;; *) die "bad CCVM_CLAUDE_DOCKER" ;; esac
+[[ $CCVM_DOCKER == rootless ]] || CCVM_CLAUDE_DOCKER=no
 
 id "$CCVM_ADMIN_USER" >/dev/null 2>&1 || die "admin user $CCVM_ADMIN_USER does not exist (cloud-init should have created it)"
 ADMIN_UID=$(id -u "$CCVM_ADMIN_USER")
@@ -346,24 +349,22 @@ claude_policy() {
   LOG "Writing Claude Code managed policy ($CCVM_CLAUDE_POLICY, mode $CCVM_CLAUDE_MODE)"
   install -d -m 0755 /etc/claude-code
 
-  local domains_json docker_sock sockets_json
+  local domains_json
   local -a dom_arr
   read -r -a dom_arr <<< "$CCVM_CLAUDE_DOMAINS"   # read -a does not glob-expand '*.example.com'
   domains_json=$(printf '%s\n' "${dom_arr[@]}" | jq -R . | jq -s .)
-  docker_sock="/run/user/$ADMIN_UID/docker.sock"
-  if [[ $CCVM_CLAUDE_DOCKER == yes && $CCVM_DOCKER == rootless ]]; then
-    sockets_json=$(jq -n --arg s "$docker_sock" '[$s]')
-  else
-    sockets_json='[]'
-  fi
 
+  # Docker access for Claude. On Linux, network.allowUnixSockets (a path list) is
+  # ignored: the seccomp filter blocks every AF_UNIX socket or none.
+  #   prompt: "docker ..." runs outside the sandbox through the normal permission prompt
+  #   socket: allowAllUnixSockets - every Unix socket, including the systemd user bus
   jq -n \
     --arg mode "$CCVM_CLAUDE_MODE" \
     --arg policy "$CCVM_CLAUDE_POLICY" \
     --arg channel "$CCVM_CLAUDE_CHANNEL" \
     --arg remote "$CCVM_CLAUDE_REMOTE" \
     --argjson domains "$domains_json" \
-    --argjson sockets "$sockets_json" \
+    --arg docker "$CCVM_CLAUDE_DOCKER" \
     --arg home "$ADMIN_HOME" '
     {
       "$schema": "https://json.schemastore.org/claude-code-settings.json",
@@ -381,7 +382,7 @@ claude_policy() {
           "Edit(//etc/**)", "Edit(~/.bashrc)", "Edit(~/.profile)", "Edit(~/.bash_profile)"
         ]
       },
-      sandbox: {
+      sandbox: ({
         enabled: true,
         failIfUnavailable: true,
         allowUnsandboxedCommands: false,
@@ -401,9 +402,9 @@ claude_policy() {
           ]
         },
         network: ({ allowedDomains: $domains }
-          + (if $sockets == [] then {} else { allowUnixSockets: $sockets } end)
+          + (if $docker == "socket" then { allowAllUnixSockets: true } else {} end)
           + (if $policy == "strict" then { allowManagedDomainsOnly: true } else {} end))
-      },
+      } + (if $docker == "prompt" then { excludedCommands: ["docker *"] } else {} end)),
       env: ({
         DISABLE_TELEMETRY: "1",
         DISABLE_ERROR_REPORTING: "1",

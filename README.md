@@ -56,7 +56,7 @@ It is intentionally **not** a `curl | bash` installer: the guest scripts are bun
 | Block LAN egress | On by default: the VM can reach the internet, gateway and DNS, not your private ranges |
 | IPv6 | Disabled by default |
 | Docker | Rootless (default) or none |
-| Claude Code | Install yes/no, `stable` or `latest` channel, update policy, **strict/standard** policy, permission mode, Remote Control on/off (off by default), sandbox domain allow-list, Docker-socket access |
+| Claude Code | Install yes/no, `stable` or `latest` channel, update policy, **strict/standard** policy, permission mode, Remote Control on/off (off by default), sandbox domain allow-list, Docker access for Claude (no / approve each command / all Unix sockets) |
 
 Every prompt can be pre-answered with an environment variable (`CCVM_VMID`, `CCVM_ADMIN_USER`, ...) and
 `CCVM_NONINTERACTIVE=1`; see the top of `provision.sh` and `tests/lint.sh` for an example. A non-interactive run
@@ -107,8 +107,15 @@ Please read these before trusting it:
   upstream interaction (see [anthropics/claude-code#101946](https://github.com/anthropics/claude-code/issues/101946)),
   and `sudo ccvm-doctor` now reports it as a FAIL. Because `failIfUnavailable` and "no unsandboxed retry" are enforced,
   Claude cannot run commands until it is resolved. See [docs/CLAUDE-SANDBOX-UBUNTU-2604.md](docs/CLAUDE-SANDBOX-UBUNTU-2604.md).
-- **Docker + sandbox:** letting Claude's sandbox reach the rootless Docker socket (an opt-in prompt) means a container
-  can read anything the admin user can. Leave it off unless you need it.
+- **Docker + sandbox:** Docker cannot run inside Claude's sandbox, and any Docker access lets a container read
+  anything the admin user can and reach the network without the domain allow-list. The opt-in prompt offers:
+  - *Ask every time* (`excludedCommands: ["docker *"]`): `docker` commands run outside the sandbox, each one only
+    after you approve it. Read what you approve: `-v ~:/x` or a Dockerfile Claude wrote can do anything you can.
+  - *Always* (`allowAllUnixSockets`): on Linux the sandbox cannot allow just the Docker socket, so this opens every
+    Unix socket, including the systemd user bus (`systemd-run --user ...` starts a process outside the sandbox).
+    Treat it as turning the sandbox off.
+
+  Leave it off unless you need it. `ccvm-doctor` warns when either is enabled.
 - **Rootless Docker limits:** no privileged containers, cannot bind ports below 1024, slower user-space networking.
 - **Egress block is IP-range based.** It stops the VM *initiating* connections to your LAN; it is not a substitute for
   network segmentation, and it does not restrict internet destinations (Claude's sandbox domain list does that for

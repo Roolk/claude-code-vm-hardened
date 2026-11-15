@@ -335,9 +335,11 @@ gather() {
       "no|No - SSH only (recommended; keeps non-essential outbound traffic and feature-flag lookups disabled)" \
       "yes|Yes - allow it (adds an outbound channel from this VM; telemetry stays off)"
     if [[ $CCVM_DOCKER == rootless ]]; then
-      choose CCVM_CLAUDE_DOCKER "Let Claude's sandbox reach your rootless Docker socket?" 1 \
+      # On Linux the sandbox cannot allow one Unix socket: it blocks all of them or none.
+      choose CCVM_CLAUDE_DOCKER "Can Claude use Docker? (Docker cannot run inside the sandbox; a container can read anything the admin user can and its network bypasses the domain allow-list)" 1 \
         "no|No - Claude cannot run docker (recommended)" \
-        "yes|Yes - docker access means a container can read anything the admin user can (the sandbox is weakened)"
+        "prompt|Ask every time - 'docker ...' commands run OUTSIDE the sandbox, only after you approve each one" \
+        "socket|Always - sandboxed commands may use EVERY Unix socket (Docker, the systemd/D-Bus user bus): the sandbox no longer contains them"
     else CCVM_CLAUDE_DOCKER=no; fi
   else
     # shellcheck disable=SC2034  # consumed by render_conf via indirection
@@ -361,7 +363,7 @@ summary() {
   printf '  %-22s %s\n' "Block LAN egress" "$CCVM_EGRESS_BLOCK_LAN${CCVM_EGRESS_ALLOW:+ (except $CCVM_EGRESS_ALLOW)}"
   printf '  %-22s %s\n' "Docker" "$CCVM_DOCKER"
   if [[ $CCVM_INSTALL_CLAUDE == yes ]]; then
-    printf '  %-22s %s channel, policy %s, mode %s, docker-socket: %s, remote-control: %s\n' "Claude Code" "$CCVM_CLAUDE_CHANNEL" "$CCVM_CLAUDE_POLICY" "$CCVM_CLAUDE_MODE" "$CCVM_CLAUDE_DOCKER" "$CCVM_CLAUDE_REMOTE"
+    printf '  %-22s %s channel, policy %s, mode %s, docker: %s, remote-control: %s\n' "Claude Code" "$CCVM_CLAUDE_CHANNEL" "$CCVM_CLAUDE_POLICY" "$CCVM_CLAUDE_MODE" "$CCVM_CLAUDE_DOCKER" "$CCVM_CLAUDE_REMOTE"
   else printf '  %-22s %s\n' "Claude Code" "not installed"; fi
   say ""
 }
