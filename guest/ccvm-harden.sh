@@ -476,10 +476,10 @@ docker_rootless() {
 
 # ── 9. Tools and finish ─────────────────────────────────────────────────────
 tooling() {
-  LOG "Installing ccvm-update and ccvm-doctor"
+  LOG "Installing ccvm-update, ccvm-doctor and ccvm-domains"
   local here
   here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  for t in ccvm-update ccvm-doctor; do
+  for t in ccvm-update ccvm-doctor ccvm-domains; do
     [[ -f $here/$t ]] && install -m 0755 -o root -g root "$here/$t" "/usr/local/sbin/$t"
   done
   # shell prompt reminder of pending reboot is left to needrestart/motd.

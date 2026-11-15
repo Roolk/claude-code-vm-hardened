@@ -69,7 +69,15 @@ ssh <admin>@<vm-ip>
 claude                  # first start: log in with your Anthropic account
 sudo ccvm-doctor        # 35 read-only checks against the baseline
 sudo ccvm-update        # manual update of OS + Claude Code, then runs the doctor
+sudo ccvm-domains list  # Claude's sandbox domain allow-list (also: add / remove) - UNTESTED, see below
 ```
+
+**Changing Claude's domain allow-list (`ccvm-domains`, untested).** `sudo ccvm-domains add example.com` or
+`remove example.com` updates both `/etc/ccvm/ccvm.conf` (so re-running `ccvm-harden` keeps your list) and
+`sandbox.network.allowedDomains` in `/etc/claude-code/managed-settings.json`, then asks you to restart `claude`.
+It has **not yet been run on a provisioned VM**: back up both files first
+(`sudo cp -a /etc/ccvm/ccvm.conf /etc/claude-code/managed-settings.json /root/`). Only root can change the list,
+so Claude cannot, but anything that learns your sudo password can.
 
 The provisioner prints the VM's SSH **host key fingerprint** from inside the guest. Compare it with what `ssh` shows
 on your first connection - that is your protection against a man-in-the-middle on first contact.
@@ -132,6 +140,7 @@ provision.sh             Proxmox-side: prompts, image verification, VM creation,
 guest/ccvm-harden.sh     In-VM hardening (runs once from cloud-init; safe to re-run)
 guest/ccvm-doctor        Read-only compliance check
 guest/ccvm-update        Manual update command
+guest/ccvm-domains       Edit Claude's sandbox domain allow-list (untested)
 guest/files/             sshd, sysctl, modprobe, fail2ban, auditd templates
 keys/                    Pinned public signing keys (Ubuntu cloud images, Anthropic)
 tests/lint.sh            shellcheck + dry-run + cloud-init schema validation
