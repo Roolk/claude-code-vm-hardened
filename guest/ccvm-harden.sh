@@ -552,6 +552,8 @@ tooling() {
   for t in ccvm-update ccvm-doctor ccvm-domains; do
     [[ -f $here/$t ]] && install -m 0755 -o root -g root "$here/$t" "/usr/local/sbin/$t"
   done
+  # A user command, root-owned so neither Claude nor a container can rewrite it.
+  install -m 0755 -o root -g root "$here/ccvm-push" /usr/local/bin/ccvm-push
   # shell prompt reminder of pending reboot is left to needrestart/motd.
   apt-get -y -qq autoremove
   apt-get -qq clean

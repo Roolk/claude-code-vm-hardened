@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# ccvm-push - push commits to GitHub yourself, from an SSH session, with a token
+# you type in. Claude commits; you review and push. The token is read from the
+# terminal, used for this one push and never stored. UNTESTED until run on a VM.
+#
+#   cd ~/repos/<repo> && ccvm-push       push the current branch
+#   ccvm-push <branch>...                push the named branches
+#
+# Use a fine-grained token limited to the repo, Contents: Read and write, short expiry.
+#
+# The repository's own hooks and config are untrusted (Claude can edit them), so:
+# hooks are disabled for every git call, the push goes to the verified GitHub URL
+# rather than through remote settings, and it is refused if any non-system config
+# could redirect the push or the token (url.*, http.*, credential.*, include*,
+# core.hooksPath/fsmonitor/sshCommand/askPass, remote.*.pushurl/receivepack, ...).
+# It never force-pushes.
+set -euo pipefail
+export GIT_PAGER=cat PAGER=cat GIT_TERMINAL_PROMPT=0
+unset GIT_ASKPASS SSH_ASKPASS GIT_DIR GIT_WORK_TREE GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT
+die() { printf '[FAIL] %s\n' "$*" >&2; exit 1; }
+g() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false "$@"; }
+
+[[ -t 0 && -r /dev/tty ]] || die "run this yourself, in an interactive SSH session"
+g rev-parse --git-dir >/dev/null 2>&1 || die "not inside a git repository"
+
+# Config that could send the push or the token somewhere else. System config is root-owned;
+# "command" scope is only g()'s own -c settings (GIT_CONFIG_PARAMETERS was unset above).
+bad=$(g config --list --show-scope --name-only 2>/dev/null | awk '$1 != "system" && $1 != "command" {print $2}' \
+  | grep -iE '^(url\.|http\.|credential\.|include\.|includeif\.|protocol\.|core\.(hookspath|fsmonitor|sshcommand|askpass|gitproxy)$|remote\..*\.(pushurl|receivepack|uploadpack|proxy|vcs)$)' || true)
+[[ -z $bad ]] || die "refusing: git config could redirect the push or the token:
+$bad
+Inspect with: git config --list --show-origin"
+
+url=$(g config --get remote.origin.url || true)
+[[ $url =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
+  || die "refusing: origin is not an https://github.com/<owner>/<repo> URL: ${url:-unset}"
+
+if (( $# )); then branches=("$@")
+else
+  cur=$(g symbolic-ref --short -q HEAD) || die "detached HEAD: name the branch to push"
+  branches=("$cur")
+fi
+for b in "${branches[@]}"; do
+  g check-ref-format --branch "$b" >/dev/null 2>&1 && g show-ref --verify --quiet "refs/heads/$b" \
+    || die "no local branch named '$b'"
+done
+
+read -rsp "GitHub token for $url: " CCVM_PUSH_TOKEN </dev/tty; echo
+[[ -n $CCVM_PUSH_TOKEN ]] || die "no token entered"
+export CCVM_PUSH_TOKEN
+trap 'unset CCVM_PUSH_TOKEN' EXIT
+# shellcheck disable=SC2016  # $CCVM_PUSH_TOKEN is expanded by the helper's shell, not here
+auth=(-c credential.helper= -c 'credential.helper=!f() { echo username=x-access-token; echo "password=$CCVM_PUSH_TOKEN"; }; f')
+
+echo
+for b in "${branches[@]}"; do
+  remote_sha=$(g "${auth[@]}" ls-remote "$url" "refs/heads/$b" | awk '{print $1}') \
+    || die "could not reach $url (wrong token or no access?)"
+  if [[ -z $remote_sha ]]; then
+    echo "== $b: new branch on GitHub; commits not on any fetched branch (up to 20):"
+    g log --oneline --no-decorate -n 20 "$b" --not --remotes
+  elif g cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
+    n=$(g rev-list --count "$remote_sha..$b")
+    if (( n == 0 )); then echo "== $b: already up to date"; continue; fi
+    echo "== $b: $n commit(s) to push:"
+    g log --oneline --no-decorate "$remote_sha..$b"
+    g merge-base --is-ancestor "$remote_sha" "$b" \
+      || echo "   (GitHub has commits this branch lacks; the push will be rejected - pull first)"
+  else
+    echo "== $b: GitHub has commits you have not fetched; the push will likely be rejected. Local tip:"
+    g log --oneline --no-decorate -n 5 "$b"
+  fi
+done
+
+echo
+read -rp "Push the above to $url? [y/N] " ok </dev/tty
+[[ $ok =~ ^[Yy] ]] || { echo "Nothing pushed."; exit 0; }
+
+refspecs=()
+for b in "${branches[@]}"; do refspecs+=("refs/heads/$b:refs/heads/$b"); done
+g "${auth[@]}" push "$url" "${refspecs[@]}"
+
+# Pushing to a URL does not update origin/<branch>; record what GitHub now has.
+for b in "${branches[@]}"; do
+  g update-ref "refs/remotes/origin/$b" "refs/heads/$b"
+  g branch --quiet --set-upstream-to="origin/$b" "$b" 2>/dev/null || true
+done
+echo ">>> pushed. The token was not stored; you can delete it on GitHub now."

@@ -71,6 +71,7 @@ claude                  # first start: log in with your Anthropic account
 sudo ccvm-doctor        # read-only checks against the hardening baseline
 sudo ccvm-update        # manual update of the OS and Claude Code, then runs the doctor
 sudo ccvm-domains list  # show Claude's sandbox domain allow-list (untested, see below)
+ccvm-push               # push the current repo's branch to GitHub with a token you type in (see below)
 ```
 
 The provisioner prints the VM's SSH **host key fingerprint**, read from inside the guest. Compare it with what `ssh`
@@ -117,6 +118,22 @@ prompt offers three answers:
 
 `ccvm-doctor` warns when either of the last two is enabled. *Ask every time* has been **tested** on one VM, with the
 policy set by hand: `docker` commands ran outside the sandbox under the session's approval setting.
+
+### Pushing Claude's commits to GitHub (`ccvm-push`)
+
+The VM stores no GitHub credentials. Claude commits; you review and push over SSH, so pushing needs SSH access to the
+VM, and that is the boundary. In the repo, run `ccvm-push` (current branch) or `ccvm-push <branch>...`. It asks for a
+token, shows the commits GitHub does not have yet, and pushes only after you confirm. It never force-pushes, and the
+token is used for that push only and never stored. Use a fine-grained token limited to the repo, with *Contents:
+Read and write*, no *Workflows* permission, and a short expiry.
+
+Claude can edit a repo's hooks and config, so `ccvm-push` treats them as untrusted: hooks are disabled, the push goes
+to the verified `https://github.com/<owner>/<repo>` URL, and it refuses if any config could redirect the push or the
+token (`url.*`, `http.*`, `credential.*`, `include*`, `core.hooksPath`, `remote.*.pushurl`, ...). It is installed
+root-owned in `/usr/local/bin`, so Claude cannot rewrite it either. For the strongest setup, also add a GitHub ruleset
+that requires a pull request to change `main`.
+
+Its checks and hook-blocking were tested against a clone of this repo; a real push with it has not been made yet.
 
 ### Changing Claude's domain allow-list (untested)
 
@@ -180,6 +197,7 @@ guest/ccvm-harden.sh     In-VM hardening (runs once from cloud-init; safe to re-
 guest/ccvm-doctor        Read-only compliance check
 guest/ccvm-update        Manual update command
 guest/ccvm-domains       Edit Claude's sandbox domain allow-list (untested)
+guest/ccvm-push          Push to GitHub yourself with a typed-in token; repo hooks/config treated as untrusted
 guest/files/             sshd, sysctl, modprobe, fail2ban and auditd templates; Remote Control unit, loop
                          and login notice
 keys/                    Pinned public signing keys (Ubuntu cloud images, Anthropic)
