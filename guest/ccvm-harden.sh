@@ -18,7 +18,20 @@ while [[ $# -gt 0 ]]; do
   case $1 in
     --config)    CONF=$2; shift 2 ;;
     --files-dir) FILES_DIR=$2; shift 2 ;;
-    *) echo "unknown option: $1" >&2; exit 2 ;;
+    -h|--help)
+      cat <<'EOF'
+Usage: sudo /opt/ccvm/guest/ccvm-harden.sh [--config FILE] [--files-dir DIR]
+
+Apply the whole hardening baseline from the config (default /etc/ccvm/ccvm.conf).
+Runs once from cloud-init at first boot and is safe to re-run, but a re-run changes
+system config: package upgrades, a firewall reset, an SSH restart, the Claude policy.
+  --config FILE      read settings from FILE instead of /etc/ccvm/ccvm.conf
+  --files-dir DIR    take templates from DIR instead of the files/ folder beside it
+
+EOF
+      cat "$FILES_DIR/ccvm-commands.txt" 2>/dev/null || echo "(the ccvm command list is not installed)"
+      exit 0 ;;
+    *) echo "unknown option: $1 (try: -h)" >&2; exit 2 ;;
   esac
 done
 
@@ -546,7 +559,7 @@ claude_rc_autostart() {
 
 # ── 10. Tools and finish ────────────────────────────────────────────────────
 tooling() {
-  LOG "Installing ccvm-update, ccvm-doctor and ccvm-domains"
+  LOG "Installing ccvm-update, ccvm-doctor, ccvm-domains, ccvm-push and their help"
   local here
   here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   for t in ccvm-update ccvm-doctor ccvm-domains; do
@@ -554,6 +567,9 @@ tooling() {
   done
   # A user command, root-owned so neither Claude nor a container can rewrite it.
   install -m 0755 -o root -g root "$here/ccvm-push" /usr/local/bin/ccvm-push
+  # The command list every ccvm command prints with -h.
+  install -d -m 0755 /usr/local/share/ccvm
+  install -m 0644 -o root -g root "$FILES_DIR/ccvm-commands.txt" /usr/local/share/ccvm/commands.txt
   # shell prompt reminder of pending reboot is left to needrestart/motd.
   apt-get -y -qq autoremove
   apt-get -qq clean

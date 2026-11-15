@@ -21,7 +21,28 @@ set -Eeuo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DRY_RUN=0
-[[ ${1:-} == --dry-run ]] && DRY_RUN=1
+case ${1:-} in
+  --dry-run) DRY_RUN=1 ;;
+  "") ;;
+  -h|--help)
+    cat <<'EOF'
+Usage: sudo ./provision.sh [--dry-run]
+
+Create the hardened Claude Code VM on this Proxmox VE node. It asks every question at
+run time; press Enter to accept a [default]. Run it from a full clone of the repository.
+  --dry-run   ask the questions and write the cloud-init user-data to ./out/user-data.yaml;
+              change nothing on Proxmox and download nothing.
+
+Pre-answer any question with its CCVM_* environment variable (e.g. CCVM_VMID=120).
+CCVM_NONINTERACTIVE=1 uses defaults for the rest; it creates the VM only with CCVM_CONFIRM=yes.
+See README.md and tests/lint.sh for examples.
+
+After provisioning, the VM has these commands:
+EOF
+    sed 's/^/  /' "$REPO_ROOT/guest/files/ccvm-commands.txt" 2>/dev/null || true
+    exit 0 ;;
+  *) printf 'unknown option: %s (try: ./provision.sh -h)\n' "$1" >&2; exit 2 ;;
+esac
 
 BOLD=$'\033[1m'; RED=$'\033[31m'; YEL=$'\033[33m'; GRN=$'\033[32m'; CYN=$'\033[36m'; NC=$'\033[0m'
 say()  { printf '%s\n' "$*"; }

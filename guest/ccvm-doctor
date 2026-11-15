@@ -4,6 +4,24 @@
 # Run as root (sudo ccvm-doctor) for the full set of checks.
 set -uo pipefail
 
+case ${1:-} in
+  -h|--help)
+    cat <<'EOF'
+Usage: sudo ccvm-doctor
+
+Read-only check that the VM still matches its hardening baseline: SSH, accounts,
+firewall, services, kernel settings, Docker, the Claude Code policy and sandbox,
+Remote Control at boot, and pending updates/reboots. Changes nothing.
+Exit 0 = all checks passed (warnings allowed), 1 = at least one FAIL.
+Without sudo it still runs, but skips the checks that need root.
+
+EOF
+    cat /usr/local/share/ccvm/commands.txt 2>/dev/null || echo "(the ccvm command list is not installed)"
+    exit 0 ;;
+  "") ;;
+  *) echo "unknown option: $1 (try: ccvm-doctor -h)" >&2; exit 2 ;;
+esac
+
 CONF=/etc/ccvm/ccvm.conf
 # shellcheck source=/dev/null
 [[ -r $CONF ]] && source "$CONF"

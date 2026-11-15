@@ -15,7 +15,23 @@ set -f   # never glob-expand '*.example.com'
 CONF=/etc/ccvm/ccvm.conf
 POLICY=/etc/claude-code/managed-settings.json
 die() { printf '[FAIL] %s\n' "$*" >&2; exit 1; }
-usage() { sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+help_text() {
+  cat <<'EOF'
+Usage: sudo ccvm-domains list
+       sudo ccvm-domains add <domain>...       e.g. add example.com '*.example.org'
+       sudo ccvm-domains remove <domain>...
+
+Show or change the domains Claude's sandboxed shell may reach. Updates both
+CCVM_CLAUDE_DOMAINS in /etc/ccvm/ccvm.conf (so re-running ccvm-harden keeps it)
+and sandbox.network.allowedDomains in /etc/claude-code/managed-settings.json.
+Restart running claude sessions afterwards. Untested on a provisioned VM:
+back up both files first.
+
+EOF
+  cat /usr/local/share/ccvm/commands.txt 2>/dev/null || echo "(the ccvm command list is not installed)"
+}
+usage() { help_text >&2; exit 2; }
+case ${1:-} in -h|--help) help_text; exit 0 ;; esac
 
 [[ $EUID -eq 0 ]] || die "run as root: sudo ccvm-domains $*"
 [[ -r $CONF ]] || die "config not found: $CONF"
