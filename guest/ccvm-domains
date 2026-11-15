@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# ccvm-domains - view or change the domains Claude's sandboxed shell may reach.
+# UNTESTED: not yet run on a provisioned VM. Keep a copy of the files it edits.
+#
+#   sudo ccvm-domains list
+#   sudo ccvm-domains add example.com '*.example.org'
+#   sudo ccvm-domains remove example.com
+#
+# It updates CCVM_CLAUDE_DOMAINS in /etc/ccvm/ccvm.conf (so a re-run of ccvm-harden
+# keeps the list) and sandbox.network.allowedDomains in the managed policy. Nothing
+# else in either file changes. Restart running claude sessions afterwards.
+set -euo pipefail
+set -f   # never glob-expand '*.example.com'
+
+CONF=/etc/ccvm/ccvm.conf
+POLICY=/etc/claude-code/managed-settings.json
+die() { printf '[FAIL] %s\n' "$*" >&2; exit 1; }
+usage() { sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+
+[[ $EUID -eq 0 ]] || die "run as root: sudo ccvm-domains $*"
+[[ -r $CONF ]] || die "config not found: $CONF"
+command -v jq >/dev/null || die "jq is required"
+
+cmd=${1:-}; shift || true
+# shellcheck source=/dev/null
+CCVM_CLAUDE_DOMAINS=$(source "$CONF"; printf '%s' "${CCVM_CLAUDE_DOMAINS:-}")
+read -r -a domains <<<"$CCVM_CLAUDE_DOMAINS"
+
+case $cmd in
+  list)
+    printf '%s\n' "${domains[@]}"
+    if [[ -r $POLICY ]]; then
+      live=$(jq -r '.sandbox.network.allowedDomains // [] | join(" ")' "$POLICY")
+      [[ $live == "${domains[*]}" ]] || printf '\n[WARN] the live policy differs from %s:\n%s\n' "$CONF" "$live" >&2
+    fi
+    exit 0 ;;
+  add|remove)
+    (( $# > 0 )) || usage
+    for d in "$@"; do
+      [[ $d =~ ^(\*\.)?[A-Za-z0-9.-]+$ ]] || die "invalid domain: $d"
+    done ;;
+  *) usage ;;
+esac
+
+new=()
+if [[ $cmd == add ]]; then
+  new=("${domains[@]}")
+  for d in "$@"; do
+    [[ " ${new[*]} " == *" $d "* ]] || new+=("$d")
+  done
+else
+  for d in "${domains[@]}"; do
+    [[ " $* " == *" $d "* ]] || new+=("$d")
+  done
+fi
+(( ${#new[@]} > 0 )) || die "refusing to leave the allow-list empty"
+
+# ccvm.conf: replace only the CCVM_CLAUDE_DOMAINS line, keep mode 0600.
+tmp=$(mktemp); trap 'rm -f "$tmp"' EXIT
+grep -v '^CCVM_CLAUDE_DOMAINS=' "$CONF" > "$tmp" || true
+printf 'CCVM_CLAUDE_DOMAINS=%q\n' "${new[*]}" >> "$tmp"
+install -m 0600 -o root -g root "$tmp" "$CONF"
+
+# Managed policy: patch only allowedDomains, and only install it if it is valid JSON.
+if [[ -r $POLICY ]]; then
+  json=$(printf '%s\n' "${new[@]}" | jq -R . | jq -s .)
+  jq --argjson d "$json" '.sandbox.network.allowedDomains = $d' "$POLICY" > "$tmp"
+  jq -e . "$tmp" >/dev/null || die "generated policy is not valid JSON; $POLICY left unchanged"
+  install -m 0644 -o root -g root "$tmp" "$POLICY"
+else
+  printf '[WARN] %s not found (Claude Code not installed?); only %s was updated\n' "$POLICY" "$CONF" >&2
+fi
+
+printf '%s\n' "${new[@]}"
+echo ">>> allow-list updated. Restart running claude sessions for it to take effect."

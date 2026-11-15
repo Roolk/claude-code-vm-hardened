@@ -15,7 +15,7 @@ fi
 
 echo ">>> apt update + upgrade (OS and Claude Code both come from signed repos)"
 apt-get update -qq || echo "[WARN] apt update failed"
-apt-get upgrade -y -qq || echo "[WARN] apt upgrade reported errors"
+apt-get upgrade -y -qq --with-new-pkgs || echo "[WARN] apt upgrade reported errors"
 apt-get autoremove -y -qq || true
 
 echo ">>> claude-code: $(claude --version 2>/dev/null | head -1 || echo not installed)"

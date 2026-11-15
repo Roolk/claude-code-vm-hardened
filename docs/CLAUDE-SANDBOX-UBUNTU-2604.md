@@ -21,7 +21,7 @@ extra user-namespace restriction *for bwrap*; the sandbox's filesystem, network 
 Reported in the upstream thread and confirmed working on a live VM (Ubuntu 26.04, Claude Code 2.1.311): `bwrap` reports `unconfined` and Claude runs commands. `provision.sh` applies this by default (it asks first).
 
 ```bash
-sudo -S -p '' tee /etc/apparmor.d/bwrap >/dev/null <<'EOT'
+sudo tee /etc/apparmor.d/bwrap >/dev/null <<'EOT'
 abi <abi/4.0>,
 include <tunables/global>
 
@@ -30,26 +30,27 @@ profile bwrap /usr/bin/bwrap flags=(unconfined) {
   include if exists <local/bwrap>
 }
 EOT
-sudo -S -p '' mkdir -p /etc/apparmor.d/disable
-sudo -S -p '' ln -sf /etc/apparmor.d/bwrap-userns-restrict /etc/apparmor.d/disable/
-sudo -S -p '' apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict || true
-sudo -S -p '' apparmor_parser -r /etc/apparmor.d/bwrap
+sudo mkdir -p /etc/apparmor.d/disable
+sudo ln -sf /etc/apparmor.d/bwrap-userns-restrict /etc/apparmor.d/disable/
+sudo apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict || true
+sudo apparmor_parser -r /etc/apparmor.d/bwrap
 ```
 
 The `disable/` symlink is what makes it survive a reboot. Verify (should print `unconfined`):
 
 ```bash
 bwrap --ro-bind / / --dev /dev --proc /proc --unshare-user cat /proc/self/attr/current
-sudo -S -p '' ccvm-doctor | grep -i sandbox
+sudo ccvm-doctor | grep -i sandbox
 ```
 
 Restart `claude` afterwards.
 
 ## Workaround B (weaker): allow all Unix sockets
 
-Settings-only. Reported upstream to make commands run by skipping the failing helper step. It removes Claude's Unix
-domain socket blocking, so sandboxed commands could reach local sockets (an ssh-agent, a Docker socket, D-Bus).
-Prefer A.
+Settings-only (`sandbox.network.allowAllUnixSockets: true`). Reported upstream to make commands run by skipping the
+failing helper step. It removes Claude's Unix domain socket blocking, so sandboxed commands can reach every local socket:
+an ssh-agent, the Docker socket, and the systemd user bus, through which `systemd-run --user ...` starts a process
+outside the sandbox. That makes it close to no sandbox at all. Prefer A.
 
 ## Not recommended
 - `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` (all programs, lost at reboot, and reported not to be

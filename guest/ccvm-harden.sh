@@ -54,6 +54,8 @@ source "$CONF"
 : "${CCVM_CLAUDE_MODE:=default}"             # default | acceptEdits | auto
 : "${CCVM_CLAUDE_POLICY:=strict}"            # strict | standard
 : "${CCVM_CLAUDE_DOCKER:=no}"; : "${CCVM_CLAUDE_REMOTE:=no}"; : "${CCVM_BWRAP_APPARMOR_FIX:=yes}"
+: "${CCVM_CLAUDE_RC_AUTOSTART:=no}"          # yes = Remote Control in tmux from boot (untested)
+: "${CCVM_CLAUDE_RC_DIR:=projects}"          # folder under the admin's home that it serves
 : "${CCVM_CLAUDE_DOMAINS:=github.com api.github.com codeload.github.com objects.githubusercontent.com raw.githubusercontent.com registry.npmjs.org pypi.org files.pythonhosted.org proxy.golang.org sum.golang.org}"
 : "${CCVM_SUDO_MODE:=password}"              # password | nopasswd
 : "${CCVM_STATE_DIR:=/var/lib/ccvm}"
@@ -62,7 +64,8 @@ source "$CONF"
 # shell, sshd and firewall syntax anyway.
 [[ $CCVM_ADMIN_USER =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || die "invalid admin user name"
 [[ $CCVM_ADMIN_USER != root ]] || die "admin user must not be root"
-[[ $CCVM_SSH_PORT =~ ^[0-9]{1,5}$ ]] || die "invalid ssh port"
+[[ $CCVM_SSH_PORT =~ ^[1-9][0-9]{0,4}$ ]] && (( CCVM_SSH_PORT <= 65535 )) || die "invalid ssh port"
+[[ -z $CCVM_DNS || $CCVM_DNS =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || die "invalid dns server: $CCVM_DNS"
 for s in ${CCVM_SSH_SOURCES//,/ }; do
   [[ $s =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}(/[0-9]{1,2})?$ ]] || die "invalid ssh source: $s"
 done
@@ -80,6 +83,12 @@ case $CCVM_CLAUDE_POLICY in strict|standard) ;; *) die "bad CCVM_CLAUDE_POLICY" 
 case $CCVM_CLAUDE_CHANNEL in stable|latest) ;; *) die "bad CCVM_CLAUDE_CHANNEL" ;; esac
 case $CCVM_DOCKER in rootless|none) ;; *) die "bad CCVM_DOCKER" ;; esac
 case $CCVM_SUDO_MODE in password|nopasswd) ;; *) die "bad CCVM_SUDO_MODE" ;; esac
+[[ $CCVM_CLAUDE_DOCKER == yes ]] && CCVM_CLAUDE_DOCKER=socket   # older configs: yes meant socket access
+case $CCVM_CLAUDE_DOCKER in no|prompt|socket) ;; *) die "bad CCVM_CLAUDE_DOCKER" ;; esac
+[[ $CCVM_DOCKER == rootless ]] || CCVM_CLAUDE_DOCKER=no
+case $CCVM_CLAUDE_RC_AUTOSTART in yes|no) ;; *) die "bad CCVM_CLAUDE_RC_AUTOSTART" ;; esac
+[[ $CCVM_CLAUDE_RC_DIR =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ && /$CCVM_CLAUDE_RC_DIR/ != */../* ]] \
+  || die "CCVM_CLAUDE_RC_DIR must be a plain path under the admin's home: $CCVM_CLAUDE_RC_DIR"
 
 id "$CCVM_ADMIN_USER" >/dev/null 2>&1 || die "admin user $CCVM_ADMIN_USER does not exist (cloud-init should have created it)"
 ADMIN_UID=$(id -u "$CCVM_ADMIN_USER")
@@ -92,8 +101,20 @@ install -d -m 0755 "$CCVM_STATE_DIR"
 render() {
   sed -e "s|@ADMIN_USER@|$CCVM_ADMIN_USER|g" \
       -e "s|@AGENT_FORWARDING@|$CCVM_SSH_AGENT_FWD|g" \
-      -e "s|@TCP_FORWARDING@|$CCVM_SSH_TCP_FWD|g" "$1"
+      -e "s|@TCP_FORWARDING@|$CCVM_SSH_TCP_FWD|g" \
+      -e "s|@RC_DIR@|$CCVM_CLAUDE_RC_DIR|g" "$1"
 }
+
+# Start the admin's systemd user manager and keep it running without a login.
+# Returns 1 if its D-Bus socket does not appear.
+user_manager_up() {
+  loginctl enable-linger "$CCVM_ADMIN_USER"
+  systemctl start "user@${ADMIN_UID}.service"
+  local i=0
+  while [[ ! -S /run/user/$ADMIN_UID/bus && $i -lt 30 ]]; do sleep 1; i=$((i+1)); done
+  [[ -S /run/user/$ADMIN_UID/bus ]]
+}
+USER_ENV="XDG_RUNTIME_DIR=/run/user/$ADMIN_UID DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$ADMIN_UID/bus"
 
 # ── 1. Base system ──────────────────────────────────────────────────────────
 base_system() {
@@ -102,7 +123,8 @@ base_system() {
 
   LOG "Updating and upgrading OS packages"
   apt-get update -qq
-  apt-get upgrade -y -qq
+  # --with-new-pkgs: a kernel update arrives as a NEW package, which plain upgrade keeps back.
+  apt-get upgrade -y -qq --with-new-pkgs
 
   LOG "Installing security tooling"
   apt-get install -y -qq --no-install-recommends \
@@ -231,6 +253,13 @@ firewall() {
     for net in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10; do
       ufw deny out to "$net" comment 'ccvm no-lan' >/dev/null
     done
+    # With IPv6 on, the LAN is also reachable via link-local and ULA addresses.
+    # Neighbour discovery and DHCPv6 are accepted earlier by ufw's before6.rules.
+    if [[ $CCVM_DISABLE_IPV6 != yes ]]; then
+      for net in fe80::/10 fc00::/7; do
+        ufw deny out to "$net" comment 'ccvm no-lan' >/dev/null
+      done
+    fi
   fi
 
   ufw logging low >/dev/null
@@ -259,8 +288,10 @@ system_hardening() {
   systemctl restart systemd-journald
 
   install -m 0644 "$FILES_DIR/fail2ban.local" /etc/fail2ban/jail.d/10-ccvm.local
+  # Add the port to the existing [sshd] section: a second [sshd] header in the
+  # same file is a DuplicateSectionError and fail2ban refuses to start.
   if [[ $CCVM_SSH_PORT != 22 ]]; then
-    printf '\n[sshd]\nport = %s\n' "$CCVM_SSH_PORT" >> /etc/fail2ban/jail.d/10-ccvm.local
+    sed -i "/^\[sshd\]\$/a port = $CCVM_SSH_PORT" /etc/fail2ban/jail.d/10-ccvm.local
   fi
   systemctl enable fail2ban.service >/dev/null 2>&1 || true
   systemctl restart fail2ban.service || WARN "fail2ban did not start"
@@ -335,24 +366,22 @@ claude_policy() {
   LOG "Writing Claude Code managed policy ($CCVM_CLAUDE_POLICY, mode $CCVM_CLAUDE_MODE)"
   install -d -m 0755 /etc/claude-code
 
-  local domains_json docker_sock sockets_json
+  local domains_json
   local -a dom_arr
   read -r -a dom_arr <<< "$CCVM_CLAUDE_DOMAINS"   # read -a does not glob-expand '*.example.com'
   domains_json=$(printf '%s\n' "${dom_arr[@]}" | jq -R . | jq -s .)
-  docker_sock="/run/user/$ADMIN_UID/docker.sock"
-  if [[ $CCVM_CLAUDE_DOCKER == yes && $CCVM_DOCKER == rootless ]]; then
-    sockets_json=$(jq -n --arg s "$docker_sock" '[$s]')
-  else
-    sockets_json='[]'
-  fi
 
+  # Docker access for Claude. On Linux, network.allowUnixSockets (a path list) is
+  # ignored: the seccomp filter blocks every AF_UNIX socket or none.
+  #   prompt: "docker ..." runs outside the sandbox through the normal permission prompt
+  #   socket: allowAllUnixSockets - every Unix socket, including the systemd user bus
   jq -n \
     --arg mode "$CCVM_CLAUDE_MODE" \
     --arg policy "$CCVM_CLAUDE_POLICY" \
     --arg channel "$CCVM_CLAUDE_CHANNEL" \
     --arg remote "$CCVM_CLAUDE_REMOTE" \
     --argjson domains "$domains_json" \
-    --argjson sockets "$sockets_json" \
+    --arg docker "$CCVM_CLAUDE_DOCKER" \
     --arg home "$ADMIN_HOME" '
     {
       "$schema": "https://json.schemastore.org/claude-code-settings.json",
@@ -370,7 +399,7 @@ claude_policy() {
           "Edit(//etc/**)", "Edit(~/.bashrc)", "Edit(~/.profile)", "Edit(~/.bash_profile)"
         ]
       },
-      sandbox: {
+      sandbox: ({
         enabled: true,
         failIfUnavailable: true,
         allowUnsandboxedCommands: false,
@@ -390,9 +419,9 @@ claude_policy() {
           ]
         },
         network: ({ allowedDomains: $domains }
-          + (if $sockets == [] then {} else { allowUnixSockets: $sockets } end)
+          + (if $docker == "socket" then { allowAllUnixSockets: true } else {} end)
           + (if $policy == "strict" then { allowManagedDomainsOnly: true } else {} end))
-      },
+      } + (if $docker == "prompt" then { excludedCommands: ["docker *"] } else {} end)),
       env: ({
         DISABLE_TELEMETRY: "1",
         DISABLE_ERROR_REPORTING: "1",
@@ -458,22 +487,17 @@ docker_rootless() {
   grep -q "^$CCVM_ADMIN_USER:" /etc/subuid || usermod --add-subuids 100000-165535 "$CCVM_ADMIN_USER"
   grep -q "^$CCVM_ADMIN_USER:" /etc/subgid || usermod --add-subgids 100000-165535 "$CCVM_ADMIN_USER"
 
-  loginctl enable-linger "$CCVM_ADMIN_USER"
-  systemctl start "user@${ADMIN_UID}.service"
-  local i=0
-  while [[ ! -S /run/user/$ADMIN_UID/bus && $i -lt 30 ]]; do sleep 1; i=$((i+1)); done
-  [[ -S /run/user/$ADMIN_UID/bus ]] || { WARN "user bus not available; rootless Docker setup skipped"; return 0; }
+  user_manager_up || { WARN "user bus not available; rootless Docker setup skipped"; return 0; }
 
   local setup=/usr/share/docker.io/contrib/dockerd-rootless-setuptool.sh
   [[ -x $setup ]] || setup=$(command -v dockerd-rootless-setuptool.sh || true)
   [[ -n $setup ]] || { WARN "dockerd-rootless-setuptool.sh not found"; return 0; }
 
-  local rt="XDG_RUNTIME_DIR=/run/user/$ADMIN_UID DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$ADMIN_UID/bus"
   # shellcheck disable=SC2086
-  runuser -u "$CCVM_ADMIN_USER" -- env $rt PATH="/usr/share/docker.io/contrib:$PATH" "$setup" install --force \
+  runuser -u "$CCVM_ADMIN_USER" -- env $USER_ENV PATH="/usr/share/docker.io/contrib:$PATH" "$setup" install --force \
     || WARN "rootless Docker setup reported errors"
   # shellcheck disable=SC2086
-  runuser -u "$CCVM_ADMIN_USER" -- env $rt systemctl --user enable --now docker.service \
+  runuser -u "$CCVM_ADMIN_USER" -- env $USER_ENV systemctl --user enable --now docker.service \
     || WARN "could not enable the user docker service"
 
   # Point the admin's shells at the rootless socket.
@@ -487,14 +511,49 @@ docker_rootless() {
   fi
 }
 
-# ── 9. Tools and finish ─────────────────────────────────────────────────────
+# ── 9. Remote Control at boot (UNTESTED) ────────────────────────────────────
+# A root-owned systemd user unit keeps `claude remote-control` running in the
+# tmux session "claude-rc". Linger starts it at boot with nobody logged in.
+claude_rc_autostart() {
+  local unit=/etc/systemd/user/ccvm-claude-rc.service
+  if [[ $CCVM_INSTALL_CLAUDE != yes || $CCVM_CLAUDE_REMOTE != yes || $CCVM_CLAUDE_RC_AUTOSTART != yes ]]; then
+    if [[ -f $unit ]]; then
+      LOG "Removing Remote Control autostart"
+      # shellcheck disable=SC2086
+      runuser -u "$CCVM_ADMIN_USER" -- env $USER_ENV systemctl --user disable --now ccvm-claude-rc.service 2>/dev/null || true
+      rm -f "$unit" /usr/local/libexec/ccvm-claude-rc-loop /etc/profile.d/ccvm-claude-rc.sh
+    fi
+    return 0
+  fi
+  LOG "Starting Claude Remote Control at boot in tmux session claude-rc (~/$CCVM_CLAUDE_RC_DIR) - untested"
+  apt-get install -y -qq --no-install-recommends tmux
+  install -d -m 0755 /usr/local/libexec /etc/systemd/user
+  install -m 0755 -o root -g root "$FILES_DIR/ccvm-claude-rc-loop" /usr/local/libexec/ccvm-claude-rc-loop
+  # SSH login notice when Remote Control is waiting for you to sign in.
+  install -m 0644 -o root -g root "$FILES_DIR/ccvm-claude-rc-profile.sh" /etc/profile.d/ccvm-claude-rc.sh
+  render "$FILES_DIR/ccvm-claude-rc.service.in" > "$unit"
+  chmod 0644 "$unit"
+  install -d -m 0750 -o "$CCVM_ADMIN_USER" -g "$CCVM_ADMIN_USER" "$ADMIN_HOME/$CCVM_CLAUDE_RC_DIR"
+
+  user_manager_up || { WARN "user bus not available; Remote Control autostart not enabled"; return 0; }
+  # enable + start, never restart: a re-run must not kill a session in use.
+  # shellcheck disable=SC2086
+  runuser -u "$CCVM_ADMIN_USER" -- env $USER_ENV systemctl --user daemon-reload || true
+  # shellcheck disable=SC2086
+  runuser -u "$CCVM_ADMIN_USER" -- env $USER_ENV systemctl --user enable --now ccvm-claude-rc.service \
+    || WARN "could not start the Remote Control service (it retries after you log in with 'claude')"
+}
+
+# ── 10. Tools and finish ────────────────────────────────────────────────────
 tooling() {
-  LOG "Installing ccvm-update and ccvm-doctor"
+  LOG "Installing ccvm-update, ccvm-doctor and ccvm-domains"
   local here
   here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  for t in ccvm-update ccvm-doctor; do
+  for t in ccvm-update ccvm-doctor ccvm-domains; do
     [[ -f $here/$t ]] && install -m 0755 -o root -g root "$here/$t" "/usr/local/sbin/$t"
   done
+  # A user command, root-owned so neither Claude nor a container can rewrite it.
+  install -m 0755 -o root -g root "$here/ccvm-push" /usr/local/bin/ccvm-push
   # shell prompt reminder of pending reboot is left to needrestart/motd.
   apt-get -y -qq autoremove
   apt-get -qq clean
@@ -511,6 +570,7 @@ main() {
   claude_code
   bwrap_apparmor
   docker_rootless
+  claude_rc_autostart
   tooling
   date -u +%FT%TZ > "$CCVM_STATE_DIR/harden.done"
   LOG "ccvm-harden complete"

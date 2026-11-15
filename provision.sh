@@ -31,6 +31,8 @@ warn() { printf '%s[WARN]%s %s\n' "$YEL" "$NC" "$*" >&2; }
 die()  { printf '%s[FAIL]%s %s\n' "$RED" "$NC" "$*" >&2; exit 1; }
 # shellcheck disable=SC2154  # rc is assigned inside the trap string itself
 trap 'rc=$?; printf "%s[FAIL]%s provision.sh aborted at line %s (exit %s)\n" "$RED" "$NC" "$LINENO" "$rc" >&2' ERR
+GNUPG_TMP=""
+trap '[[ -n $GNUPG_TMP ]] && rm -rf "$GNUPG_TMP"' EXIT
 
 # Pinned fingerprint of Canonical's "UEC Image Automatic Signing Key".
 UBUNTU_IMAGE_KEY_FPR=D2EB44626FDDC30B513D5BB71A5D6C4C7DB87C81
@@ -43,7 +45,7 @@ v_uint()     { [[ $1 =~ ^[1-9][0-9]*$ ]]; }
 v_vmid()     { [[ $1 =~ ^[1-9][0-9]{2,8}$ ]] && ! vmid_in_use "$1"; }
 v_name()     { [[ $1 =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]]; }
 v_user()     { [[ $1 =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] && [[ $1 != root ]]; }
-v_cidr()     { [[ $1 =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]] && octets_ok "${1%/*}" && (( ${1#*/} <= 32 )); }
+v_cidr()     { [[ $1 =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]] && octets_ok "${1%/*}" && (( 10#${1#*/} <= 32 )); }
 v_ip()       { [[ $1 =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] && octets_ok "$1"; }
 v_ip_or_cidr() { v_ip "$1" || v_cidr "$1"; }
 v_ip_or_blank() { [[ -z $1 ]] || v_ip "$1"; }
@@ -55,8 +57,9 @@ v_time()     { [[ $1 =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]]; }
 v_vlan()     { [[ -z $1 ]] || { [[ $1 =~ ^[0-9]+$ ]] && (( $1 >= 1 && $1 <= 4094 )); }; }
 v_sources()  { local s; [[ -n $1 ]] || return 1; for s in ${1//,/ }; do v_ip_or_cidr "$s" || return 1; done; }
 v_ip_list_blank() { local s; [[ -z $1 ]] && return 0; for s in ${1//,/ }; do v_ip_or_cidr "$s" || return 1; done; }
+v_reldir()   { [[ $1 =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ && /$1/ != */../* ]]; }
 v_domains()  { local d; [[ -n $1 ]] || return 1; for d in $1; do [[ $d =~ ^(\*\.)?[A-Za-z0-9.-]+$ ]] || return 1; done; }
-octets_ok()  { local o; IFS=. read -ra o <<<"$1"; for x in "${o[@]}"; do (( 10#$x <= 255 )) || return 1; done; }
+octets_ok()  { local o x; IFS=. read -ra o <<<"$1"; for x in "${o[@]}"; do (( 10#$x <= 255 )) || return 1; done; }
 
 vmid_in_use() {
   (( DRY_RUN )) && return 1
@@ -169,10 +172,11 @@ l=sys.stdin.read().strip()
 print(ipaddress.ip_interface(l).network if l else "")' 2>/dev/null || true; }
 
 # ── SSH key collection ──────────────────────────────────────────────────────
-# validate_pubkey_line "<line>" -> prints a sanitised "type base64 comment" or returns 1
+# validate_pubkey_line "<line>" -> prints a sanitised "type base64 comment", or
+# returns 1 (invalid line) or 2 (private key). It runs in a subshell, so the caller aborts.
 validate_pubkey_line() {
   local line=$1 tmp type blob comment bits
-  [[ $line == *PRIVATE* ]] && { warn "that looks like a PRIVATE key - never paste those. Aborting."; exit 1; }
+  [[ $line == *PRIVATE* ]] && return 2
   read -r type blob comment <<<"$line"
   case $type in
     ssh-ed25519|sk-ssh-ed25519@openssh.com|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|sk-ecdsa-sha2-nistp256@openssh.com|ssh-rsa) ;;
@@ -217,7 +221,9 @@ collect_ssh_keys() {
   esac
   while IFS= read -r line; do
     [[ -z ${line// } || $line == \#* ]] && continue
-    if k=$(validate_pubkey_line "$line"); then SSH_KEYS+=("$k"); else warn "skipped an invalid/unsupported key line"; fi
+    if k=$(validate_pubkey_line "$line"); then SSH_KEYS+=("$k")
+    elif (( $? == 2 )); then die "that looks like a PRIVATE key - never paste those. Aborting."
+    else warn "skipped an invalid/unsupported key line"; fi
   done <<<"$data"
   (( ${#SSH_KEYS[@]} > 0 )) || die "no valid public keys were provided - refusing to continue (you would be locked out)"
   ok "${#SSH_KEYS[@]} valid public key(s) accepted"
@@ -332,15 +338,27 @@ gather() {
     choose CCVM_CLAUDE_REMOTE "Claude Code Remote Control (drive this VM's sessions from another device via Anthropic's servers)" 1 \
       "no|No - SSH only (recommended; keeps non-essential outbound traffic and feature-flag lookups disabled)" \
       "yes|Yes - allow it (adds an outbound channel from this VM; telemetry stays off)"
+    if [[ $CCVM_CLAUDE_REMOTE == yes ]]; then
+      choose CCVM_CLAUDE_RC_AUTOSTART "Start Remote Control automatically at every boot, in tmux session 'claude-rc'? (UNTESTED)" 1 \
+        "yes|Yes - always available after a reboot; you log in once with 'claude' first" \
+        "no|No - I will run 'claude rc' myself"
+      if [[ $CCVM_CLAUDE_RC_AUTOSTART == yes ]]; then
+        ask CCVM_CLAUDE_RC_DIR "Folder under the admin's home that Remote Control works in" "projects" v_reldir
+      fi
+    fi
+    CCVM_CLAUDE_RC_AUTOSTART=${CCVM_CLAUDE_RC_AUTOSTART:-no}; CCVM_CLAUDE_RC_DIR=${CCVM_CLAUDE_RC_DIR:-projects}
     if [[ $CCVM_DOCKER == rootless ]]; then
-      choose CCVM_CLAUDE_DOCKER "Let Claude's sandbox reach your rootless Docker socket?" 1 \
+      # On Linux the sandbox cannot allow one Unix socket: it blocks all of them or none.
+      choose CCVM_CLAUDE_DOCKER "Can Claude use Docker? (Docker cannot run inside the sandbox; a container can read anything the admin user can and its network bypasses the domain allow-list)" 1 \
         "no|No - Claude cannot run docker (recommended)" \
-        "yes|Yes - docker access means a container can read anything the admin user can (the sandbox is weakened)"
+        "prompt|Ask every time - 'docker ...' commands run OUTSIDE the sandbox, only after you approve each one" \
+        "socket|Always - sandboxed commands may use EVERY Unix socket (Docker, the systemd/D-Bus user bus): the sandbox no longer contains them"
     else CCVM_CLAUDE_DOCKER=no; fi
   else
     # shellcheck disable=SC2034  # consumed by render_conf via indirection
     CCVM_CLAUDE_CHANNEL=stable; CCVM_CLAUDE_AUTO_UPDATE=no; CCVM_CLAUDE_POLICY=strict
     CCVM_CLAUDE_MODE=default; CCVM_CLAUDE_DOCKER=no; CCVM_CLAUDE_REMOTE=no; CCVM_BWRAP_APPARMOR_FIX=no
+    CCVM_CLAUDE_RC_AUTOSTART=no; CCVM_CLAUDE_RC_DIR=projects
     CCVM_CLAUDE_DOMAINS="github.com"
   fi
   CCVM_BIOS=${CCVM_BIOS:-ovmf}
@@ -359,7 +377,10 @@ summary() {
   printf '  %-22s %s\n' "Block LAN egress" "$CCVM_EGRESS_BLOCK_LAN${CCVM_EGRESS_ALLOW:+ (except $CCVM_EGRESS_ALLOW)}"
   printf '  %-22s %s\n' "Docker" "$CCVM_DOCKER"
   if [[ $CCVM_INSTALL_CLAUDE == yes ]]; then
-    printf '  %-22s %s channel, policy %s, mode %s, docker-socket: %s, remote-control: %s, bwrap-apparmor-fix: %s\n' "Claude Code" "$CCVM_CLAUDE_CHANNEL" "$CCVM_CLAUDE_POLICY" "$CCVM_CLAUDE_MODE" "$CCVM_CLAUDE_DOCKER" "$CCVM_CLAUDE_REMOTE" "$CCVM_BWRAP_APPARMOR_FIX"
+    printf '  %-22s %s channel, policy %s, mode %s, docker: %s, remote-control: %s, bwrap-apparmor-fix: %s\n' "Claude Code" "$CCVM_CLAUDE_CHANNEL" "$CCVM_CLAUDE_POLICY" "$CCVM_CLAUDE_MODE" "$CCVM_CLAUDE_DOCKER" "$CCVM_CLAUDE_REMOTE" "$CCVM_BWRAP_APPARMOR_FIX"
+    if [[ $CCVM_CLAUDE_RC_AUTOSTART == yes ]]; then
+      printf '  %-22s at boot in tmux session claude-rc, in ~/%s (untested)\n' "Remote Control" "$CCVM_CLAUDE_RC_DIR"
+    fi
   else printf '  %-22s %s\n' "Claude Code" "not installed"; fi
   say ""
 }
@@ -372,7 +393,7 @@ render_conf() {
   printf '# Generated by provision.sh - read by ccvm-harden\n'
   for k in ADMIN_USER SSH_SOURCES SSH_PORT SSH_TCP_FWD SSH_AGENT_FWD TIMEZONE DISABLE_IPV6 \
            EGRESS_BLOCK_LAN EGRESS_ALLOW DNS UPDATE_POLICY REBOOT_TIME DOCKER INSTALL_CLAUDE \
-           CLAUDE_CHANNEL CLAUDE_AUTO_UPDATE CLAUDE_MODE CLAUDE_POLICY CLAUDE_DOCKER CLAUDE_REMOTE BWRAP_APPARMOR_FIX CLAUDE_DOMAINS SUDO_MODE; do
+           CLAUDE_CHANNEL CLAUDE_AUTO_UPDATE CLAUDE_MODE CLAUDE_POLICY CLAUDE_DOCKER CLAUDE_REMOTE BWRAP_APPARMOR_FIX CLAUDE_RC_AUTOSTART CLAUDE_RC_DIR CLAUDE_DOMAINS SUDO_MODE; do
     local var="CCVM_$k"
     printf 'CCVM_%s=%q\n' "$k" "${!var-}"
   done
@@ -420,7 +441,7 @@ render_userdata() {
     echo "    content: $bundle"
     echo 'runcmd:'
     echo '  - [ systemctl, enable, --now, qemu-guest-agent ]'
-    echo '  - [ bash, -c, "set -e; install -d -m 0755 /opt/ccvm; tar -xzf /var/lib/ccvm/bundle.tgz -C /opt/ccvm; rm -f /var/lib/ccvm/bundle.tgz" ]'
+    echo '  - [ bash, -c, "{ install -d -m 0755 /opt/ccvm && tar -xzf /var/lib/ccvm/bundle.tgz -C /opt/ccvm && rm -f /var/lib/ccvm/bundle.tgz; } || touch /var/lib/ccvm/harden.failed" ]'
     echo '  - [ bash, -c, "set -o pipefail; /opt/ccvm/guest/ccvm-harden.sh 2>&1 | tee /var/log/ccvm-harden.log || touch /var/lib/ccvm/harden.failed" ]'
   }
 }
@@ -432,8 +453,9 @@ fetch_image() {
   local base="https://cloud-images.ubuntu.com/releases/$UBUNTU_RELEASE/release"
   local img="ubuntu-$UBUNTU_RELEASE-server-cloudimg-$arch.img"
   install -d -m 0700 "$CACHE_DIR"
-  local gh; gh=$(mktemp -d)
-  chmod 700 "$gh"
+  GNUPG_TMP=$(mktemp -d)
+  chmod 700 "$GNUPG_TMP"
+  local gh=$GNUPG_TMP
 
   info "Fetching checksums and signature from cloud-images.ubuntu.com"
   curl -fsSL --max-time 60 "$base/SHA256SUMS"     -o "$CACHE_DIR/SHA256SUMS"
@@ -446,7 +468,7 @@ fetch_image() {
   status=$(GNUPGHOME=$gh gpg --batch --status-fd 1 --verify "$CACHE_DIR/SHA256SUMS.gpg" "$CACHE_DIR/SHA256SUMS" 2>/dev/null || true)
   grep -q "^\[GNUPG:\] VALIDSIG .*$UBUNTU_IMAGE_KEY_FPR" <<<"$status" \
     || die "SHA256SUMS signature is NOT valid for Canonical's image-signing key - aborting"
-  rm -rf "$gh"
+  rm -rf "$gh"; GNUPG_TMP=""
   ok "SHA256SUMS signature verified (key $UBUNTU_IMAGE_KEY_FPR)"
 
   local want; want=$(awk -v f="*$img" '$2==f {print $1}' "$CACHE_DIR/SHA256SUMS")
@@ -490,10 +512,14 @@ create_vm() {
   qm create "$CCVM_VMID" "${args[@]}"
 
   info "Importing the verified Ubuntu image"
-  if ! qm set "$CCVM_VMID" --scsi0 "$CCVM_STORAGE:0,import-from=$IMAGE_PATH,discard=on,ssd=1,iothread=1" 2>/dev/null; then
-    warn "'import-from' unsupported here; falling back to 'qm importdisk'"
+  if ! qm set "$CCVM_VMID" --scsi0 "$CCVM_STORAGE:0,import-from=$IMAGE_PATH,discard=on,ssd=1,iothread=1"; then
+    warn "'import-from' failed (error above); falling back to 'qm importdisk'"
     qm importdisk "$CCVM_VMID" "$IMAGE_PATH" "$CCVM_STORAGE" >/dev/null
-    qm set "$CCVM_VMID" --scsi0 "$CCVM_STORAGE:vm-$CCVM_VMID-disk-$([[ $CCVM_BIOS == ovmf ]] && echo 1 || echo 0),discard=on,ssd=1,iothread=1"
+    # The volume name depends on the storage type (e.g. 'local:100/vm-100-disk-1.raw'
+    # on a directory storage), so take it from the unusedN entry importdisk added.
+    local vol; vol=$(qm config "$CCVM_VMID" | awk '/^unused[0-9]+:/ {print $2; exit}')
+    [[ -n $vol ]] || die "qm importdisk did not leave an unused disk to attach"
+    qm set "$CCVM_VMID" --scsi0 "$vol,discard=on,ssd=1,iothread=1"
   fi
   qm set "$CCVM_VMID" --boot order=scsi0
   qm resize "$CCVM_VMID" scsi0 "${CCVM_DISK}G"
@@ -560,6 +586,10 @@ first_boot() {
   say "  Host key:     ${fp:-<unavailable>}"
   say "                ^ compare this with what ssh shows on your first connection."
   say "  Then run:     claude        (log in with your Anthropic account on first start)"
+  if [[ $CCVM_CLAUDE_RC_AUTOSTART == yes ]]; then
+    say "  Remote:       run 'claude' once in ~/$CCVM_CLAUDE_RC_DIR to log in and trust the folder; Remote Control"
+    say "                then starts within 15 s and at every boot. Watch it: tmux attach -t claude-rc"
+  fi
   say "  Updates:      sudo ccvm-update       Health: sudo ccvm-doctor"
   if [[ $CCVM_DHCP_NOTE == 1 ]]; then say "  Remember:     create a DHCP reservation for this VM on your router."; fi
 }
@@ -574,7 +604,11 @@ main() {
     ok "dry run: wrote out/user-data.yaml ($(wc -c < "$REPO_ROOT/out/user-data.yaml") bytes). Nothing else was done."
     return 0
   fi
-  confirm "Create the VM with these settings?" n || { say "Aborted."; exit 0; }
+  if [[ ${CCVM_NONINTERACTIVE:-0} == 1 ]]; then
+    [[ ${CCVM_CONFIRM:-} == yes ]] || die "non-interactive mode: set CCVM_CONFIRM=yes to create the VM"
+  else
+    confirm "Create the VM with these settings?" n || { say "Aborted."; exit 0; }
+  fi
   CCVM_DHCP_NOTE=0; [[ $CCVM_IP_MODE == dhcp ]] && CCVM_DHCP_NOTE=1
   fetch_image
   create_vm

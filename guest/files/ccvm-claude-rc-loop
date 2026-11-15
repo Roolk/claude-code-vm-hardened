@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Managed by ccvm-harden. UNTESTED. Runs inside the tmux session "claude-rc"
+# (started by the ccvm-claude-rc user service) and restarts Remote Control
+# whenever it exits.
+#
+# While Claude is not signed in it does not start Remote Control: it says so
+# here, in the system journal (journalctl -t ccvm-claude-rc), in a status file
+# that the SSH login notice and ccvm-doctor read, and checks again every minute.
+status_file="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/ccvm-claude-rc.status"
+last=""
+
+report() { # report <state> <message> - log only when the state changes
+  printf '%s %s\n' "$1" "$(date -u +%FT%TZ)" > "$status_file"
+  echo "[$(date '+%F %T')] $2"
+  if [[ $1 != "$last" ]]; then
+    logger -t ccvm-claude-rc -p "user.$([[ $1 == running ]] && echo notice || echo warning)" "$2" || true
+    last=$1
+  fi
+}
+
+while :; do
+  if ! claude auth status >/dev/null 2>&1; then
+    report not-signed-in "Claude is NOT signed in, so Remote Control is not running. Fix: run 'claude' in a normal shell and sign in (or 'claude auth login'). Checking again every 60s."
+    sleep 60
+    continue
+  fi
+  report running "Starting claude remote-control in $PWD"
+  claude remote-control
+  rc=$?
+  report exited "claude remote-control exited ($rc); restarting in 15s. To stop it: systemctl --user stop ccvm-claude-rc"
+  sleep 15
+done

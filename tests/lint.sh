@@ -7,7 +7,8 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 echo "== shellcheck"
 docker run --rm --name ccvm-lint-shellcheck -v "$PWD":/mnt -w /mnt koalaman/shellcheck:stable -x -S warning \
-  provision.sh guest/ccvm-harden.sh guest/ccvm-doctor guest/ccvm-update tests/lint.sh
+  provision.sh guest/ccvm-harden.sh guest/ccvm-doctor guest/ccvm-update guest/ccvm-domains guest/ccvm-push \
+  guest/files/ccvm-claude-rc-loop guest/files/ccvm-claude-rc-profile.sh tests/lint.sh
 
 echo "== dry-run user-data"
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
