@@ -124,7 +124,9 @@ policy set by hand: `docker` commands ran outside the sandbox under the session'
 
 The VM stores no GitHub credentials. Claude commits; you review and push over SSH, so pushing needs SSH access to the
 VM, and that is the boundary. In the repo, run `ccvm-push` (current branch) or `ccvm-push <branch>...`. It asks for a
-token, shows the commits GitHub does not have yet, and pushes only after you confirm. It never force-pushes, and the
+token, checks it (whose it is, when it expires, and with a dry-run push whether it can write to the repo), shows the
+commits GitHub does not have yet, and pushes only after you confirm. If GitHub refuses, it says why in plain words:
+wrong or expired token, no write access to the repo, a workflow change, branch protection, or newer commits on GitHub. It never force-pushes, and the
 token is used for that push only and never stored. Use a fine-grained token limited to the repo, with *Contents:
 Read and write*, no *Workflows* permission, and a short expiry.
 

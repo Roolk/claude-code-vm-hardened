@@ -63,12 +63,68 @@ for b in "${branches[@]}"; do
     || die "no local branch named '$b'"
 done
 
+owner_repo=${url#https://github.com/}; owner_repo=${owner_repo%.git}
+tmp=$(mktemp -d)
 read -rsp "GitHub token for $url: " CCVM_PUSH_TOKEN </dev/tty; echo
 [[ -n $CCVM_PUSH_TOKEN ]] || die "no token entered"
 export CCVM_PUSH_TOKEN
-trap 'unset CCVM_PUSH_TOKEN' EXIT
+trap 'unset CCVM_PUSH_TOKEN; rm -rf "$tmp"' EXIT
 # shellcheck disable=SC2016  # $CCVM_PUSH_TOKEN is expanded by the helper's shell, not here
 auth=(-c credential.helper= -c 'credential.helper=!f() { echo username=x-access-token; echo "password=$CCVM_PUSH_TOKEN"; }; f')
+
+# explain <git stderr file> - show git's output, then say in plain words what went wrong.
+explain() {
+  local e user
+  e=$(<"$1")
+  printf '%s\n' "$e" | sed 's/^/   git: /' >&2
+  if grep -qiE 'refusing to allow .*workflow' <<<"$e"; then
+    die "the commits change files in .github/workflows/, which needs the token's Workflows permission.
+       Granting it lets anything that can push also change CI and reach its secrets; consider
+       making workflow changes on the GitHub website instead."
+  elif grep -qE 'GH006|GH013|protected branch|[Rr]epository rule violations' <<<"$e"; then
+    die "branch protection or a ruleset on $owner_repo refused the push.
+       Push to another branch and open a pull request instead."
+  elif user=$(grep -oE 'Permission to [^ ]+ denied to [^ .]+' <<<"$e" | awk '{print $NF}') && [[ -n $user ]]; then
+    die "the token works (it belongs to $user) but cannot WRITE to $owner_repo.
+       On GitHub, edit the token: Repository access must include $owner_repo, and
+       Repository permissions > Contents must be 'Read and write'.
+       (For a repo owned by an organization, the organization may also need to approve the token.)"
+  elif grep -qE 'returned error: 403' <<<"$e"; then
+    die "GitHub refused the push (HTTP 403): the token cannot write to $owner_repo.
+       Check its Repository access and that Contents is 'Read and write'."
+  elif grep -qiE 'Invalid username or (password|token)|Authentication failed|returned error: 401' <<<"$e"; then
+    die "GitHub did not accept the token: it is wrong, expired or revoked."
+  elif grep -qiE 'Repository not found|returned error: 404' <<<"$e"; then
+    die "the token cannot see $owner_repo: a private repo missing from the token's Repository access,
+       or the repo was renamed or moved."
+  elif grep -qiE 'non-fast-forward|fetch first|\[rejected\]' <<<"$e"; then
+    die "GitHub has commits this branch does not. Pull or merge them first, then push again
+       (ccvm-push never force-pushes)."
+  elif grep -qiE 'Could not resolve host|Failed to connect|timed out' <<<"$e"; then
+    die "could not reach GitHub (network or DNS problem)."
+  fi
+  die "the push failed; see the git output above."
+}
+
+# 1. Is the token valid at all? (The API says who it belongs to and when it expires.)
+code=$(printf 'Authorization: Bearer %s\n' "$CCVM_PUSH_TOKEN" \
+  | curl -sS --max-time 15 -o "$tmp/user.json" -D "$tmp/user.hdr" -w '%{http_code}' -H @- \
+      -H 'Accept: application/vnd.github+json' https://api.github.com/user 2>/dev/null) || code=000
+case $code in
+  200)
+    login=$(sed -n 's/^ *"login": *"\([^"]*\)".*/\1/p' "$tmp/user.json" | head -1)
+    expires=$(grep -i '^github-authentication-token-expiration:' "$tmp/user.hdr" | cut -d' ' -f2- | tr -d '\r')
+    echo "Token OK: belongs to ${login:-?}${expires:+, expires $expires}." ;;
+  401) die "GitHub rejected the token: it is wrong, expired or revoked (nothing was pushed)." ;;
+  000) echo "[WARN] could not reach api.github.com to check the token; trying the push anyway." ;;
+  *)   echo "[WARN] token check returned HTTP $code; trying the push anyway." ;;
+esac
+
+# 2. Can it write? A dry-run push makes GitHub check push permission without sending anything.
+refspecs=()
+for b in "${branches[@]}"; do refspecs+=("refs/heads/$b:refs/heads/$b"); done
+LC_ALL=C g "${auth[@]}" push --dry-run "$url" "${refspecs[@]}" 2>"$tmp/dry.err" || explain "$tmp/dry.err"
+echo "Write access to $owner_repo confirmed (dry run)."
 
 echo
 for b in "${branches[@]}"; do
@@ -94,9 +150,8 @@ echo
 read -rp "Push the above to $url? [y/N] " ok </dev/tty
 [[ $ok =~ ^[Yy] ]] || { echo "Nothing pushed."; exit 0; }
 
-refspecs=()
-for b in "${branches[@]}"; do refspecs+=("refs/heads/$b:refs/heads/$b"); done
-g "${auth[@]}" push "$url" "${refspecs[@]}"
+LC_ALL=C g "${auth[@]}" push "$url" "${refspecs[@]}" 2>"$tmp/push.err" || explain "$tmp/push.err"
+cat "$tmp/push.err" >&2
 
 # Pushing to a URL does not update origin/<branch>; record what GitHub now has.
 for b in "${branches[@]}"; do
